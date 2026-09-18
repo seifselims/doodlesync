@@ -1,0 +1,6 @@
+{
+  "extends": "@doodlesync/config/tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true
+  }
+}

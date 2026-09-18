@@ -1,0 +1,3 @@
+{
+  "extends": "@doodlesync/config/tsconfig.base.json"
+}
