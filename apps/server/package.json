@@ -22,7 +22,8 @@
 		"better-auth": "catalog:",
 		"hono": "^4.13.7",
 		"varlock": "catalog:",
-		"zod": "catalog:"
+		"zod": "catalog:",
+		"@doodlesync/shared":"workspace:*"
 	},
 	"devDependencies": {
 		"@doodlesync/config": "workspace:*",

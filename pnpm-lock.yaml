@@ -90,6 +90,9 @@ importers:
       '@doodlesync/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@doodlesync/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       '@hono/node-server':
         specifier: ^2.1.1
         version: 2.1.1(hono@4.13.8)
@@ -127,6 +130,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@doodlesync/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       '@doodlesync/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -240,6 +246,22 @@ importers:
       varlock:
         specifier: 'catalog:'
         version: 1.18.0
+
+  packages/shared:
+    dependencies:
+      zod:
+        specifier: 'catalog:'
+        version: 4.6.5
+    devDependencies:
+      '@doodlesync/config':
+        specifier: workspace:*
+        version: link:../config
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.1(@types/node@26.6.1)(vite@8.3.0(@types/node@26.6.1)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13))
 
   packages/ui:
     dependencies:
