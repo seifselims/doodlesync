@@ -154,6 +154,28 @@ doodlesync/
 - `pnpm run docker:logs`: Tail logs from the Docker Compose stack
 - `pnpm run docker:down`: Stop the Docker Compose stack
 
+## Server tests
+
+Run these commands from the repository root:
+
+- `pnpm test`: Run all configured workspace tests once.
+- `pnpm run test:transport`: Run HTTP/WebSocket transport tests.
+- `pnpm run test:domain`: Run room/game rule tests as they are introduced.
+- `pnpm run test:watch`: Run tests and watch for changes; stop with Ctrl+C.
+- `pnpm --filter server test`: Run only the server tests.
+
+Vitest runs in Node. Place tests alongside source using
+`*.transport.test.ts` for request/socket behavior and `*.domain.test.ts` for
+room/game rules. Both groups are configured in `apps/server/vitest.config.ts`.
+The domain group is currently empty: its focused command exits with code 1
+("No test files found") until Phase 1 adds real domain tests. No placeholder
+or automatic pass for an empty suite is configured.
+
+The existing transport tests call `createApp` with a controlled auth handler and
+send direct requests. They need no running server, database, or `.env` file.
+They verify routing and CORS headers, not real Better Auth login or browser CORS
+enforcement. Future WebSocket tests should start and clean up a temporary listener.
+
 ## Better Auth Schema Generation
 
 After changing auth plugins or schema options, run `pnpm run auth:generate` from the project root. The script runs the Better Auth CLI through `varlock run` from the owning app directory, loading the auth instance from `src/services.ts`. Review the schema changes, then use your ORM's migration workflow to apply them.
