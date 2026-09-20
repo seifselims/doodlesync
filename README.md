@@ -86,6 +86,29 @@ Run standalone Node/Bun tools that use Varlock from the owning app directory so 
 
 ### Docker Compose
 
+For local PostgreSQL, copy `.env.example` to `.env` at the repository root and
+set `POSTGRES_PASSWORD` to a generated value (`openssl rand -hex 32`). Compose
+requires a nonempty password and publishes PostgreSQL only on `127.0.0.1:5432`.
+The root `.env` is gitignored and supplies Compose interpolation; the service's
+`env_file` does not supply variables for interpolation.
+
+Use the same password in `apps/server/.env`:
+`DATABASE_URL=postgresql://postgres:<password>@localhost:5432/doodlesync`.
+Compose overrides the hostname to `postgres` for the containerized server.
+Use the suggested hex password so it is safe to embed in both URLs without
+percent-encoding.
+
+Changing `POSTGRES_PASSWORD` does not update credentials in an existing database
+volume. If the database was already initialized, rotate its role password and
+update the environment values together; do not delete the volume to change a
+password.
+
+This Compose setup is for local development. Credentials remain runtime
+environment variables and can appear in container inspection or expanded
+`docker compose config` output; do not share that output. For production, use
+managed secrets, private database networking, and a restricted application role
+instead of the `postgres` superuser.
+
 - Target: server
 - Config: `docker-compose.yml` (app Dockerfiles live in `apps/*/Dockerfile`)
 - Build images: pnpm run docker:build

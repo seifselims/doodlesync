@@ -15,7 +15,7 @@ services:
       - path: apps/server/.env
         required: false
     environment:
-      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-password}@postgres:5432/doodlesync
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}@postgres:5432/doodlesync
     healthcheck:
       test:
         [
@@ -39,9 +39,9 @@ services:
     environment:
       POSTGRES_DB: doodlesync
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - doodlesync_postgres_data:/var/lib/postgresql
     healthcheck:
