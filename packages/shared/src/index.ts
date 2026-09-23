@@ -14,3 +14,4 @@ export {
 	roomSnapshotSchema,
 } from "./room-snapshot";
 export { type ServerEvent, serverEventsSchema } from "./server-events";
+export { socketCloseCodes } from "./socket-close-codes";

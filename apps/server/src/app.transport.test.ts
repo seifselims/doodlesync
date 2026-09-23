@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createApp } from "./app";
+import { ConnectionRegistry } from "./realtime/connection-registry";
 import { RoomService } from "./rooms/room-service";
 
 const corsOrigin = "http://localhost:3001";
@@ -18,6 +19,7 @@ function setup() {
 			authHandler,
 			getSession: async () => null,
 			roomService: new RoomService(),
+			connections: new ConnectionRegistry(),
 		}),
 		authHandler,
 	};

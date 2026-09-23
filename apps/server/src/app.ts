@@ -14,6 +14,7 @@ export function createApp({
 	authHandler,
 	getSession,
 	roomService,
+	connections,
 }: AppDependencies) {
 	const app = new Hono();
 
@@ -32,7 +33,7 @@ export function createApp({
 
 	app.route(
 		"/api/rooms",
-		createRoomRoutes({ corsOrigin, getSession, roomService }),
+		createRoomRoutes({ corsOrigin, getSession, roomService, connections }),
 	);
 
 	app.get("/", (c) => {

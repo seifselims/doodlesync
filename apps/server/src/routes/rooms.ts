@@ -1,22 +1,38 @@
 import { createRoomInputSchema, type PlayerSnapshot } from "@doodlesync/shared";
+import { upgradeWebSocket } from "@hono/node-server";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
+import type { ConnectionRegistry } from "../realtime/connection-registry";
 import { RoomError } from "../rooms/room-error";
 import type { RoomService } from "../rooms/room-service";
+
+const roomCodeSchema = z
+	.string()
+	.trim()
+	.toUpperCase()
+	.regex(/^[A-Z2-9]{6}$/);
 
 export type RoomRouteDependencies = {
 	corsOrigin: string;
 	getSession: (headers: Headers) => Promise<{ user: PlayerSnapshot } | null>;
 	roomService: RoomService;
+	connections: ConnectionRegistry;
+};
+
+// Values the socket checks hand to the upgrade handler.
+type SocketVariables = {
+	player: PlayerSnapshot;
+	roomCode: string;
 };
 
 export function createRoomRoutes({
 	corsOrigin,
 	getSession,
 	roomService,
+	connections,
 }: RoomRouteDependencies) {
-	const routes = new Hono();
+	const routes = new Hono<{ Variables: SocketVariables }>();
 
 	routes.post(
 		"/",
@@ -131,12 +147,7 @@ export function createRoomRoutes({
 				401,
 			);
 		}
-		const code = z
-			.string()
-			.trim()
-			.toUpperCase()
-			.regex(/^[A-Z2-9]{6}$/)
-			.safeParse(c.req.param("code"));
+		const code = roomCodeSchema.safeParse(c.req.param("code"));
 		if (!code.success) {
 			return c.json(
 				{ error: { code: "INVALID_INPUT", message: "Invalid room code." } },
@@ -161,6 +172,85 @@ export function createRoomRoutes({
 			throw error;
 		}
 	});
+
+	routes.get(
+		"/:code/ws",
+		async (c, next) => {
+			c.header("Cache-Control", "no-store");
+			// Browsers always send Origin on WebSocket handshakes and CORS does not
+			// protect upgrades, so a missing or foreign origin is rejected.
+			if (c.req.header("Origin") !== corsOrigin) {
+				return c.json(
+					{
+						error: { code: "INVALID_INPUT", message: "Origin is not allowed." },
+					},
+					403,
+				);
+			}
+			if (c.req.header("Upgrade")?.toLowerCase() !== "websocket") {
+				return c.json(
+					{
+						error: {
+							code: "INVALID_INPUT",
+							message: "Expected a WebSocket upgrade.",
+						},
+					},
+					426,
+				);
+			}
+			const session = await getSession(c.req.raw.headers);
+			if (!session) {
+				return c.json(
+					{
+						error: {
+							code: "UNAUTHENTICATED",
+							message: "Sign in to connect to a room.",
+						},
+					},
+					401,
+				);
+			}
+			const code = roomCodeSchema.safeParse(c.req.param("code"));
+			if (!code.success) {
+				return c.json(
+					{ error: { code: "INVALID_INPUT", message: "Invalid room code." } },
+					400,
+				);
+			}
+			try {
+				roomService.getRoomForMember(session.user.id, code.data);
+			} catch (error) {
+				if (error instanceof RoomError && error.code === "ROOM_NOT_FOUND") {
+					return c.json(
+						{ error: { code: error.code, message: error.message } },
+						404,
+					);
+				}
+				if (error instanceof RoomError && error.code === "NOT_IN_ROOM") {
+					return c.json(
+						{ error: { code: error.code, message: error.message } },
+						403,
+					);
+				}
+				throw error;
+			}
+			// Identity is fixed here from the session; socket messages never supply it.
+			c.set("player", { id: session.user.id, name: session.user.name });
+			c.set("roomCode", code.data);
+			return next();
+		},
+		// Runs only after every check above passed.
+		upgradeWebSocket((c) => {
+			const player = c.get("player");
+			const roomCode = c.get("roomCode");
+			return {
+				onOpen: (_event, ws) => connections.attach(player.id, roomCode, ws),
+				onClose: (_event, ws) => {
+					connections.detach(player.id, ws);
+				},
+			};
+		}),
+	);
 
 	return routes;
 }

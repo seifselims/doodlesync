@@ -18,16 +18,18 @@
 	"dependencies": {
 		"@doodlesync/auth": "workspace:*",
 		"@doodlesync/db": "workspace:*",
+		"@doodlesync/shared": "workspace:*",
 		"@hono/node-server": "^2.1.1",
 		"better-auth": "catalog:",
 		"hono": "^4.13.7",
 		"varlock": "catalog:",
-		"zod": "catalog:",
-		"@doodlesync/shared": "workspace:*"
+		"ws": "^8.21.3",
+		"zod": "catalog:"
 	},
 	"devDependencies": {
 		"@doodlesync/config": "workspace:*",
 		"@types/node": "catalog:",
+		"@types/ws": "^8.18.1",
 		"tsdown": "^0.23.0",
 		"tsx": "^4.23.13",
 		"typescript": "catalog:",

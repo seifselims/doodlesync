@@ -1,6 +1,9 @@
-import { roomSnapshotSchema } from "@doodlesync/shared";
-import { describe, expect, it, vi } from "vitest";
+import { roomSnapshotSchema, socketCloseCodes } from "@doodlesync/shared";
+import { type ServerType, serve } from "@hono/node-server";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { WebSocket, WebSocketServer } from "ws";
 import { createApp } from "../app";
+import { ConnectionRegistry } from "../realtime/connection-registry";
 import { RoomError } from "../rooms/room-error";
 import { RoomService } from "../rooms/room-service";
 
@@ -13,10 +16,12 @@ function setup(authenticated = true) {
 		authenticated ? { user } : null,
 	);
 	const create = vi.spyOn(roomService, "createRoom");
+	const connections = new ConnectionRegistry();
 	const app = createApp({
 		corsOrigin,
 		getSession,
 		roomService,
+		connections,
 		authHandler: async () => new Response(),
 	});
 	const post = (
@@ -33,7 +38,7 @@ function setup(authenticated = true) {
 			},
 			body,
 		});
-	return { app, post, create, getSession, roomService };
+	return { app, post, create, getSession, roomService, connections };
 }
 
 describe("POST /api/rooms", () => {
@@ -161,5 +166,141 @@ describe("GET /api/rooms/:code", () => {
 		expect((await app.request(`/api/rooms/${room.code}`)).status).toBe(200);
 		roomService.leaveRoom(user, room.code);
 		expect((await app.request(`/api/rooms/${room.code}`)).status).toBe(403);
+	});
+});
+
+describe("GET /api/rooms/:code/ws", () => {
+	const connect = (
+		app: ReturnType<typeof setup>["app"],
+		code = "ABC234",
+		headers: Record<string, string | undefined> = {},
+	) =>
+		app.request(`/api/rooms/${code}/ws`, {
+			headers: Object.fromEntries(
+				Object.entries({
+					Connection: "Upgrade",
+					Upgrade: "websocket",
+					Cookie: "session=test",
+					Origin: corsOrigin,
+					...headers,
+				}).filter((entry): entry is [string, string] => entry[1] !== undefined),
+			),
+		});
+	it.each([
+		["a foreign origin", "https://evil.example"],
+		["a missing origin", undefined],
+	])("rejects %s before checking the session", async (_label, origin) => {
+		const { app, getSession } = setup();
+		const response = await connect(app, "ABC234", { Origin: origin });
+		expect(response.status).toBe(403);
+		expect(await response.json()).toMatchObject({
+			error: { code: "INVALID_INPUT" },
+		});
+		expect(getSession).not.toHaveBeenCalled();
+	});
+	it("requires a WebSocket upgrade", async () => {
+		const { app, getSession } = setup();
+		const response = await connect(app, "ABC234", { Upgrade: undefined });
+		expect(response.status).toBe(426);
+		expect(getSession).not.toHaveBeenCalled();
+	});
+	it("rejects unauthenticated upgrades and forwards session headers", async () => {
+		const { app, getSession } = setup(false);
+		const response = await connect(app);
+		expect(response.status).toBe(401);
+		expect(response.headers.get("Cache-Control")).toBe("no-store");
+		expect(getSession.mock.calls[0]?.[0].get("Cookie")).toBe("session=test");
+	});
+	it("rejects invalid codes, missing rooms and nonmembers", async () => {
+		const { app, roomService } = setup();
+		const room = roomService.createRoom(
+			{ id: "other", name: "Omar" },
+			{ settings },
+		);
+		expect((await connect(app, "invalid-code")).status).toBe(400);
+		expect((await connect(app, "ABC234")).status).toBe(404);
+		const nonmember = await connect(app, room.code);
+		expect(nonmember.status).toBe(403);
+		expect(await nonmember.json()).toMatchObject({
+			error: { code: "NOT_IN_ROOM" },
+		});
+	});
+});
+
+describe("GET /api/rooms/:code/ws on a live server", () => {
+	let server: ServerType | undefined;
+	afterEach(async () => {
+		await new Promise((resolve) => server?.close(resolve) ?? resolve(null));
+		server = undefined;
+	});
+	async function listen() {
+		const context = setup();
+		const webSocketServer = new WebSocketServer({ noServer: true });
+		const port = await new Promise<number>((resolve) => {
+			server = serve(
+				{
+					fetch: context.app.fetch,
+					port: 0,
+					websocket: { server: webSocketServer },
+				},
+				(info) => resolve(info.port),
+			);
+		});
+		return { ...context, port };
+	}
+	const open = (port: number, code: string, origin = corsOrigin) =>
+		new Promise<{ socket?: WebSocket; status?: number }>((resolve) => {
+			const socket = new WebSocket(
+				`ws://localhost:${port}/api/rooms/${code}/ws`,
+				{
+					headers: { Origin: origin, Cookie: "session=test" },
+				},
+			);
+			socket.once("open", () => resolve({ socket }));
+			socket.once("unexpected-response", (_request, response) =>
+				resolve({ status: response.statusCode }),
+			);
+		});
+	it("opens a connection for a room member", async () => {
+		const { port, roomService } = await listen();
+		const room = roomService.createRoom(user, { settings });
+		const { socket } = await open(port, room.code);
+		expect(socket?.readyState).toBe(WebSocket.OPEN);
+		socket?.terminate();
+	});
+	it("refuses the handshake with the rejection status", async () => {
+		const { port, roomService } = await listen();
+		const room = roomService.createRoom(user, { settings });
+		expect(await open(port, room.code, "https://evil.example")).toEqual({
+			status: 403,
+		});
+		const other = roomService.createRoom(
+			{ id: "other", name: "Omar" },
+			{ settings },
+		);
+		expect(await open(port, other.code)).toEqual({ status: 403 });
+	});
+	it("closes the older connection when the same player connects again", async () => {
+		const { port, roomService, connections } = await listen();
+		const room = roomService.createRoom(user, { settings });
+		const detach = vi.spyOn(connections, "detach");
+		const { socket: first } = await open(port, room.code);
+		const firstClosed = new Promise<number>((resolve) =>
+			first?.once("close", resolve),
+		);
+		const { socket: second } = await open(port, room.code);
+		expect(await firstClosed).toBe(socketCloseCodes.replaced);
+		expect(second?.readyState).toBe(WebSocket.OPEN);
+		// Wait for the server to handle the old socket's close: it must be
+		// ignored and must not remove the replacement.
+		await vi.waitFor(() => expect(detach).toHaveReturnedWith(false));
+		expect(connections.get(user.id)?.roomCode).toBe(room.code);
+
+		const secondClosed = new Promise((resolve) =>
+			second?.once("close", resolve),
+		);
+		second?.close();
+		await secondClosed;
+		await vi.waitFor(() => expect(connections.get(user.id)).toBeUndefined());
 	});
 });
