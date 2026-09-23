@@ -8,6 +8,8 @@ import { auth, roomService } from "./services";
 const app = createApp({
 	corsOrigin: ENV.CORS_ORIGIN,
 	authHandler: (request) => auth.handler(request),
+	getSession: (headers) => auth.api.getSession({ headers }),
+	roomService,
 });
 
 const server = serve(

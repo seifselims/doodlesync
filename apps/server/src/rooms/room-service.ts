@@ -1,5 +1,6 @@
 import { createRoomInputSchema, type PlayerSnapshot } from "@doodlesync/shared";
 import { generateRoomCode } from "./room-code";
+import { RoomError } from "./room-error";
 import type { RoomState } from "./room-state";
 
 type RoomServiceOptions = {
@@ -9,6 +10,7 @@ type RoomServiceOptions = {
 
 export class RoomService {
 	private rooms = new Map<string, RoomState>();
+	private memberships = new Map<string, string>();
 	private readonly now: () => number;
 	private readonly emptyRoomTtlMs: number;
 
@@ -52,13 +54,22 @@ export class RoomService {
 		return removed;
 	}
 
+	private assertAvailableMembership(playerId: string, code?: string): void {
+		const current = this.memberships.get(playerId);
+		if (current !== undefined && current !== code) {
+			throw new RoomError("ALREADY_IN_ROOM", "Leave your current room first.");
+		}
+	}
+
 	createRoom(player: PlayerSnapshot, input: unknown) {
 		const createInput = createRoomInputSchema.parse(input);
+		this.assertAvailableMembership(player.id);
 		let code = generateRoomCode();
 		let attempts = 1;
 		while (this.findRoom(code)) {
 			if (attempts >= 10) {
-				throw new Error(
+				throw new RoomError(
+					"ROOM_CODE_EXHAUSTED",
 					"Could not generate a room code at this time. Try again Later.",
 				);
 			}
@@ -74,6 +85,7 @@ export class RoomService {
 			emptySince: null,
 		};
 		this.rooms.set(code, room);
+		this.memberships.set(player.id, code);
 		return {
 			code: room.code,
 			hostId: room.hostId,
@@ -81,10 +93,19 @@ export class RoomService {
 			players: Array.from(room.players.values(), (player) => ({ ...player })),
 		};
 	}
+	// Transport callers must use this authorized lookup with session-derived identity.
+	getRoomForMember(playerId: string, code: string) {
+		const snapshot = this.getRoom(code);
+		if (this.memberships.get(playerId) !== snapshot.code) {
+			throw new RoomError("NOT_IN_ROOM", "You are not a member of this room.");
+		}
+		return snapshot;
+	}
+
 	getRoom(code: string) {
 		const room = this.findRoom(code.trim().toUpperCase());
 		if (!room || room.hostId === null) {
-			throw new Error("Room not found.");
+			throw new RoomError("ROOM_NOT_FOUND", "Room not found.");
 		}
 		return {
 			code: room.code,
@@ -95,10 +116,11 @@ export class RoomService {
 	}
 	joinRoom(player: PlayerSnapshot, code: string) {
 		const normalizedCode = code.trim().toUpperCase();
+		this.assertAvailableMembership(player.id, normalizedCode);
 		const room = this.findRoom(normalizedCode);
 
 		if (!room) {
-			throw new Error("Room not found.");
+			throw new RoomError("ROOM_NOT_FOUND", "Room not found.");
 		}
 
 		if (room.players.has(player.id)) {
@@ -106,7 +128,7 @@ export class RoomService {
 		}
 
 		if (room.players.size >= room.settings.maxPlayers) {
-			throw new Error("Room is full.");
+			throw new RoomError("ROOM_FULL", "Room is full.");
 		}
 
 		if (room.players.size === 0) {
@@ -114,6 +136,7 @@ export class RoomService {
 		}
 
 		room.players.set(player.id, { ...player });
+		this.memberships.set(player.id, normalizedCode);
 		room.emptySince = null;
 
 		return this.getRoom(normalizedCode);
@@ -126,6 +149,8 @@ export class RoomService {
 		if (!room.players.delete(player.id)) {
 			return room.players.size === 0 ? null : this.getRoom(normalizedCode);
 		}
+
+		this.memberships.delete(player.id);
 
 		if (room.players.size === 0) {
 			room.hostId = null;

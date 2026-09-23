@@ -2,12 +2,19 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 
-type AppDependencies = {
+import { createRoomRoutes, type RoomRouteDependencies } from "./routes/rooms";
+
+type AppDependencies = RoomRouteDependencies & {
 	corsOrigin: string;
 	authHandler: (request: Request) => Response | Promise<Response>;
 };
 
-export function createApp({ corsOrigin, authHandler }: AppDependencies) {
+export function createApp({
+	corsOrigin,
+	authHandler,
+	getSession,
+	roomService,
+}: AppDependencies) {
 	const app = new Hono();
 
 	app.use(logger());
@@ -22,6 +29,11 @@ export function createApp({ corsOrigin, authHandler }: AppDependencies) {
 	);
 
 	app.on(["POST", "GET"], "/api/auth/*", async (c) => authHandler(c.req.raw));
+
+	app.route(
+		"/api/rooms",
+		createRoomRoutes({ corsOrigin, getSession, roomService }),
+	);
 
 	app.get("/", (c) => {
 		return c.text("OK");

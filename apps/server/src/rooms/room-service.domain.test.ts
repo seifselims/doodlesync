@@ -2,6 +2,7 @@ import { roomSnapshotSchema } from "@doodlesync/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ZodError } from "zod";
 import { generateRoomCode } from "./room-code";
+import { RoomError } from "./room-error";
 import { RoomService } from "./room-service";
 
 vi.mock("./room-code", () => ({ generateRoomCode: vi.fn() }));
@@ -120,6 +121,75 @@ describe("RoomService", () => {
 		first.createRoom(player, { settings });
 		expect(() => second.createRoom(player, { settings })).not.toThrow();
 		expect(generateCode).toHaveBeenCalledTimes(2);
+	});
+
+	describe("account membership", () => {
+		const other = { id: "user-2", name: "Omar" };
+
+		it("rejects another creation before allocating a code", () => {
+			const service = new RoomService();
+			const room = service.createRoom(player, { settings });
+			generateCode.mockClear();
+			expect(() =>
+				service.createRoom({ ...player, name: "Renamed" }, { settings }),
+			).toThrow(
+				new RoomError("ALREADY_IN_ROOM", "Leave your current room first."),
+			);
+			expect(generateCode).not.toHaveBeenCalled();
+			expect(service.getRoom(room.code)).toEqual(room);
+		});
+
+		it("rejects cross-room joins without changing either room", () => {
+			const service = new RoomService();
+			const first = service.createRoom(player, { settings });
+			generateCode.mockReturnValue("XYZ789");
+			const second = service.createRoom(other, { settings });
+			expect(() => service.joinRoom(player, second.code)).toThrowError(
+				expect.objectContaining({ code: "ALREADY_IN_ROOM" }),
+			);
+			expect(service.getRoom(first.code)).toEqual(first);
+			expect(service.getRoom(second.code)).toEqual(second);
+			expect(service.joinRoom(player, " abc234 ")).toEqual(first);
+		});
+
+		it("releases membership on leave and ignores stale or unrelated leaves", () => {
+			const service = new RoomService();
+			const first = service.createRoom(player, { settings });
+			generateCode.mockReturnValue("XYZ789");
+			const second = service.createRoom(other, { settings });
+			service.leaveRoom(player, " abc234 ");
+			service.joinRoom(player, second.code);
+			service.leaveRoom(player, first.code);
+			service.leaveRoom(player, "MISSING");
+			expect(() => service.joinRoom(player, first.code)).toThrowError(
+				expect.objectContaining({ code: "ALREADY_IN_ROOM" }),
+			);
+			service.leaveRoom(player, second.code);
+			generateCode.mockReturnValue("NEW234");
+			expect(service.createRoom(player, { settings }).players).toEqual([
+				player,
+			]);
+		});
+
+		it("does not reserve membership after failed joins or code exhaustion", () => {
+			const service = new RoomService();
+			const first = service.createRoom(player, {
+				settings: { ...settings, maxPlayers: 2 },
+			});
+			service.joinRoom(other, first.code);
+			const guest = { id: "user-3", name: "Mona" };
+			expect(() => service.joinRoom(guest, first.code)).toThrowError(
+				expect.objectContaining({ code: "ROOM_FULL" }),
+			);
+			expect(() => service.joinRoom(guest, "MISSING")).toThrowError(
+				expect.objectContaining({ code: "ROOM_NOT_FOUND" }),
+			);
+			expect(() => service.createRoom(guest, { settings })).toThrowError(
+				expect.objectContaining({ code: "ROOM_CODE_EXHAUSTED" }),
+			);
+			generateCode.mockReturnValue("XYZ789");
+			expect(service.createRoom(guest, { settings }).players).toEqual([guest]);
+		});
 	});
 
 	describe("getRoom", () => {

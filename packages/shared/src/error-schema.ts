@@ -5,6 +5,8 @@ export const errorCodeSchema = z.enum([
 	"UNAUTHENTICATED",
 	"ROOM_NOT_FOUND",
 	"ROOM_FULL",
+	"ALREADY_IN_ROOM",
+	"ROOM_CODE_EXHAUSTED",
 	"NOT_HOST",
 	"NOT_IN_ROOM",
 ]);

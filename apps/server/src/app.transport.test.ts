@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createApp } from "./app";
+import { RoomService } from "./rooms/room-service";
 
 const corsOrigin = "http://localhost:3001";
 
@@ -11,7 +12,15 @@ function setup() {
 			headers: { "Set-Cookie": "session=; Max-Age=0; HttpOnly" },
 		});
 	});
-	return { app: createApp({ corsOrigin, authHandler }), authHandler };
+	return {
+		app: createApp({
+			corsOrigin,
+			authHandler,
+			getSession: async () => null,
+			roomService: new RoomService(),
+		}),
+		authHandler,
+	};
 }
 
 describe("HTTP application", () => {
