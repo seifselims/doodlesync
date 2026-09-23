@@ -5,6 +5,7 @@ export {
 	errorSchema,
 	type GameError,
 } from "./error-schema";
+export { type CreateRoomInput, createRoomInputSchema } from "./room-http";
 export { type RoomSettings, roomSettingsSchema } from "./room-settings";
 export {
 	type PlayerSnapshot,
@@ -13,4 +14,3 @@ export {
 	roomSnapshotSchema,
 } from "./room-snapshot";
 export { type ServerEvent, serverEventsSchema } from "./server-events";
-export { createRoomInputSchema, type CreateRoomInput } from "./room-http";

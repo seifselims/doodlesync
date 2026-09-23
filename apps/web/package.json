@@ -24,8 +24,7 @@
 		"sonner": "catalog:",
 		"varlock": "catalog:",
 		"zod": "catalog:",
-		"@doodlesync/shared":"workspace:*"
-
+		"@doodlesync/shared": "workspace:*"
 	},
 	"devDependencies": {
 		"@doodlesync/config": "workspace:*",
