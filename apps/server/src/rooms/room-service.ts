@@ -1,4 +1,8 @@
-import { createRoomInputSchema, type PlayerSnapshot } from "@doodlesync/shared";
+import {
+	createRoomInputSchema,
+	type PlayerSnapshot,
+	roomSettingsSchema,
+} from "@doodlesync/shared";
 import { generateRoomCode } from "./room-code";
 import { RoomError } from "./room-error";
 import type { RoomState } from "./room-state";
@@ -140,6 +144,28 @@ export class RoomService {
 		room.emptySince = null;
 
 		return this.getRoom(normalizedCode);
+	}
+	updateSettings(playerId: string, code: string, input: unknown) {
+		const snapshot = this.getRoomForMember(playerId, code);
+		if (snapshot.hostId !== playerId) {
+			throw new RoomError("NOT_HOST", "Only the host can change settings");
+		}
+		const result = roomSettingsSchema.safeParse(input);
+		if (!result.success) {
+			throw new RoomError("INVALID_INPUT", "Invalid room settings");
+		}
+		if (result.data.maxPlayers < snapshot.players.length) {
+			throw new RoomError(
+				"INVALID_INPUT",
+				"Player limit cannot be lower than the current player count.",
+			);
+		}
+		const room = this.findRoom(snapshot.code);
+		if (!room) {
+			throw new RoomError("ROOM_NOT_FOUND", "Room not found.");
+		}
+		room.settings = { ...result.data };
+		return this.getRoom(snapshot.code);
 	}
 	leaveRoom(player: PlayerSnapshot, code: string) {
 		const normalizedCode = code.trim().toUpperCase();

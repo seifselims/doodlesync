@@ -2,6 +2,7 @@ import { socketCloseCodes } from "@doodlesync/shared";
 
 export type RoomSocket = {
 	close(code?: number, reason?: string): void;
+	send(data: string): void;
 };
 
 type Connection<Socket> = {

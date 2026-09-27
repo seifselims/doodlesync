@@ -1,4 +1,8 @@
-import { roomSnapshotSchema, socketCloseCodes } from "@doodlesync/shared";
+import {
+	roomSnapshotSchema,
+	serverEventsSchema,
+	socketCloseCodes,
+} from "@doodlesync/shared";
 import { type ServerType, serve } from "@hono/node-server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
@@ -107,6 +111,111 @@ describe("POST /api/rooms", () => {
 			(await post(undefined, { "Content-Type": "text/plain" })).status,
 		).toBe(415);
 		expect(create).not.toHaveBeenCalled();
+	});
+});
+
+describe("POST /api/rooms/:code/join", () => {
+	it("joins using session identity, broadcasts and allows repeated joins", async () => {
+		const { app, roomService, connections } = setup();
+		const owner = { id: "owner", name: "Owner" };
+		const room = roomService.createRoom(owner, { settings });
+		const socket = { send: vi.fn(), close: vi.fn() };
+		connections.attach(owner.id, room.code, socket);
+		const response = await app.request(
+			`/api/rooms/${room.code.toLowerCase()}/join`,
+			{
+				method: "POST",
+				body: JSON.stringify({ playerId: "forged" }),
+			},
+		);
+		expect(response.status).toBe(200);
+		expect(response.headers.get("Cache-Control")).toBe("no-store");
+		const snapshot = roomSnapshotSchema.parse(await response.json());
+		expect(snapshot.players).toEqual([owner, user]);
+		expect(JSON.parse(socket.send.mock.calls[0]?.[0])).toEqual({
+			type: "room:snapshot",
+			snapshot,
+		});
+		expect(
+			(await app.request(`/api/rooms/${room.code}/join`, { method: "POST" }))
+				.status,
+		).toBe(200);
+		expect(roomService.getRoom(room.code).players).toHaveLength(2);
+	});
+	it("does not extend the attachment deadline on repeated joins", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const { app, roomService } = setup();
+			const room = roomService.createRoom(
+				{ id: "owner", name: "Owner" },
+				{ settings },
+			);
+			const join = () =>
+				app.request(`/api/rooms/${room.code}/join`, { method: "POST" });
+			expect((await join()).status).toBe(200);
+			await vi.advanceTimersByTimeAsync(29_999);
+			expect((await join()).status).toBe(200);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(() => roomService.getRoomForMember(user.id, room.code)).toThrow(
+				"You are not a member",
+			);
+		} finally {
+			vi.clearAllTimers();
+			vi.useRealTimers();
+		}
+	});
+
+	it("returns stable errors for authentication, invalid codes and missing rooms", async () => {
+		expect(
+			(
+				await setup(false).app.request("/api/rooms/ABC234/join", {
+					method: "POST",
+				})
+			).status,
+		).toBe(401);
+		const { app } = setup();
+		for (const [code, status, error] of [
+			["invalid", 400, "INVALID_INPUT"],
+			["ABC234", 404, "ROOM_NOT_FOUND"],
+		] as const) {
+			const response = await app.request(`/api/rooms/${code}/join`, {
+				method: "POST",
+			});
+			expect(response.status).toBe(status);
+			expect(await response.json()).toMatchObject({ error: { code: error } });
+		}
+	});
+	it("returns 409 for full rooms and membership in another room", async () => {
+		const { app, roomService } = setup();
+		const room = roomService.createRoom(
+			{ id: "owner", name: "Owner" },
+			{ settings: { ...settings, maxPlayers: 2 } },
+		);
+		roomService.joinRoom({ id: "guest", name: "Guest" }, room.code);
+		const full = await app.request(`/api/rooms/${room.code}/join`, {
+			method: "POST",
+		});
+		expect(full.status).toBe(409);
+		expect(await full.json()).toMatchObject({ error: { code: "ROOM_FULL" } });
+		roomService.createRoom(user, { settings });
+		const conflict = await app.request(`/api/rooms/${room.code}/join`, {
+			method: "POST",
+		});
+		expect(conflict.status).toBe(409);
+		expect(await conflict.json()).toMatchObject({
+			error: { code: "ALREADY_IN_ROOM" },
+		});
+	});
+	it("rejects foreign origins before authentication or joining", async () => {
+		const { app, getSession, roomService } = setup();
+		const join = vi.spyOn(roomService, "joinRoom");
+		const response = await app.request("/api/rooms/ABC234/join", {
+			method: "POST",
+			headers: { Origin: "https://evil.example" },
+		});
+		expect(response.status).toBe(403);
+		expect(getSession).not.toHaveBeenCalled();
+		expect(join).not.toHaveBeenCalled();
 	});
 });
 
@@ -267,6 +376,74 @@ describe("GET /api/rooms/:code/ws on a live server", () => {
 		const { socket } = await open(port, room.code);
 		expect(socket?.readyState).toBe(WebSocket.OPEN);
 		socket?.terminate();
+	});
+	it("counts malformed messages, blocks mutations when limited and preserves allowance across reconnects", async () => {
+		// Freeze only the limiter's clock; network events and test timers stay real.
+		const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+		const sockets: WebSocket[] = [];
+		try {
+			const { port, roomService } = await listen();
+			const room = roomService.createRoom(user, { settings });
+			const update = vi.spyOn(roomService, "updateSettings");
+			const leave = vi.spyOn(roomService, "leaveRoom");
+			const { socket: first } = await open(port, room.code);
+			if (!first) throw new Error("Expected an open socket");
+			sockets.push(first);
+			const errors: unknown[] = [];
+			first.on("message", (data) => {
+				const event = serverEventsSchema.parse(JSON.parse(data.toString()));
+				if (event.type === "error") errors.push(event.error.code);
+			});
+			const firstClosed = new Promise<number>((resolve) =>
+				first.once("close", resolve),
+			);
+			for (let i = 0; i < 10; i++) first.send("{");
+			first.send(
+				JSON.stringify({
+					type: "room:update-settings",
+					settings: { ...settings, rounds: 5 },
+				}),
+			);
+			expect(await firstClosed).toBe(socketCloseCodes.rateLimited);
+			expect(errors).toEqual(Array(10).fill("INVALID_INPUT"));
+			expect(update).not.toHaveBeenCalled();
+			expect(roomService.getRoom(room.code)).toEqual(room);
+
+			const { socket: second } = await open(port, room.code);
+			if (!second) throw new Error("Expected an open replacement socket");
+			sockets.push(second);
+			const secondClosed = new Promise<number>((resolve) =>
+				second.once("close", resolve),
+			);
+			second.send(JSON.stringify({ type: "room:leave" }));
+			expect(await secondClosed).toBe(socketCloseCodes.rateLimited);
+			expect(leave).not.toHaveBeenCalled();
+			expect(roomService.getRoom(room.code)).toEqual(room);
+		} finally {
+			for (const socket of sockets) socket.terminate();
+			clock.mockRestore();
+		}
+	});
+	it("sends the current public snapshot as the first message on connection", async () => {
+		const { port, roomService } = await listen();
+		const room = roomService.createRoom(user, { settings });
+		roomService.joinRoom({ id: "other", name: "Omar" }, room.code);
+		const socket = new WebSocket(
+			`ws://localhost:${port}/api/rooms/${room.code}/ws`,
+			{ headers: { Origin: corsOrigin, Cookie: "session=test" } },
+		);
+		try {
+			const event = await new Promise<unknown>((resolve, reject) => {
+				socket.once("message", (data) => resolve(JSON.parse(data.toString())));
+				socket.once("error", reject);
+			});
+			expect(serverEventsSchema.parse(event)).toEqual({
+				type: "room:snapshot",
+				snapshot: roomService.getRoomForMember(user.id, room.code),
+			});
+		} finally {
+			socket.terminate();
+		}
 	});
 	it("refuses the handshake with the rejection status", async () => {
 		const { port, roomService } = await listen();

@@ -2,4 +2,5 @@
 export const socketCloseCodes = {
 	// The same account opened a newer connection; clients must not auto-reconnect.
 	replaced: 4001,
+	rateLimited: 4002,
 } as const;

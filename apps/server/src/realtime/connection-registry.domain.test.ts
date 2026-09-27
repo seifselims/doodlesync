@@ -2,7 +2,7 @@ import { socketCloseCodes } from "@doodlesync/shared";
 import { describe, expect, it, vi } from "vitest";
 import { ConnectionRegistry } from "./connection-registry";
 
-const socket = () => ({ close: vi.fn() });
+const socket = () => ({ close: vi.fn(), send: vi.fn() });
 
 describe("ConnectionRegistry", () => {
 	it("tracks a player's connection until it closes", () => {

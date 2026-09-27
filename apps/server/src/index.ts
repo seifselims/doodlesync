@@ -1,8 +1,7 @@
 import { serve } from "@hono/node-server";
-import { WebSocketServer } from "ws";
-
 import { createApp } from "./app";
 import { ENV } from "./env.server";
+import { createWebSocketServer } from "./realtime/websocket-server";
 import { startRoomCleanup } from "./rooms/room-cleanup";
 import { auth, connections, roomService } from "./services";
 
@@ -15,10 +14,7 @@ const app = createApp({
 });
 
 // Shares the HTTP server; Hono routes decide which requests may upgrade.
-const webSocketServer = new WebSocketServer({
-	noServer: true,
-	maxPayload: 16 * 1024,
-});
+const webSocketServer = createWebSocketServer();
 
 const server = serve(
 	{
