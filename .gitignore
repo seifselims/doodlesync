@@ -57,3 +57,5 @@ coverage
 tmp
 temp
 docs/
+.agents./
+.claude/

@@ -1,12 +1,17 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Fredoka, Geist_Mono, Nunito } from "next/font/google";
 
 import "../index.css";
 import Header from "@/components/header";
 import Providers from "@/components/providers";
 
-const geistSans = Geist({
-	variable: "--font-geist-sans",
+const nunito = Nunito({
+	variable: "--font-nunito",
+	subsets: ["latin"],
+});
+
+const fredoka = Fredoka({
+	variable: "--font-fredoka",
 	subsets: ["latin"],
 });
 
@@ -16,8 +21,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-	title: "doodlesync",
-	description: "doodlesync",
+	title: { default: "DoodleSync", template: "%s · DoodleSync" },
+	description: "Draw it. Guess it. A multiplayer sketch-and-guess game.",
 };
 
 export default function RootLayout({
@@ -28,10 +33,10 @@ export default function RootLayout({
 	return (
 		<html lang="en" suppressHydrationWarning>
 			<body
-				className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+				className={`${nunito.variable} ${fredoka.variable} ${geistMono.variable} doodle-bg antialiased`}
 			>
 				<Providers>
-					<div className="grid h-svh grid-rows-[auto_1fr]">
+					<div className="grid min-h-svh grid-rows-[auto_1fr]">
 						<Header />
 						{children}
 					</div>

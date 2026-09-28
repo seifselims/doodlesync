@@ -1,4 +1,5 @@
 import {
+	currentRoomSchema,
 	roomSnapshotSchema,
 	serverEventsSchema,
 	socketCloseCodes,
@@ -216,6 +217,93 @@ describe("POST /api/rooms/:code/join", () => {
 		expect(response.status).toBe(403);
 		expect(getSession).not.toHaveBeenCalled();
 		expect(join).not.toHaveBeenCalled();
+	});
+});
+
+describe("GET /api/rooms/current", () => {
+	it("returns the caller's room code, or null, without caching", async () => {
+		const { app, roomService } = setup();
+		const empty = await app.request("/api/rooms/current");
+		expect(empty.status).toBe(200);
+		expect(empty.headers.get("Cache-Control")).toBe("no-store");
+		expect(currentRoomSchema.parse(await empty.json())).toEqual({ code: null });
+		const room = roomService.createRoom(user, { settings });
+		const current = await app.request("/api/rooms/current");
+		expect(await current.json()).toEqual({ code: room.code });
+	});
+	it("rejects unauthenticated requests", async () => {
+		const response = await setup(false).app.request("/api/rooms/current");
+		expect(response.status).toBe(401);
+		expect(await response.json()).toMatchObject({
+			error: { code: "UNAUTHENTICATED" },
+		});
+	});
+});
+
+describe("POST /api/rooms/:code/leave", () => {
+	it("leaves using session identity, transfers host and notifies sockets", async () => {
+		const { app, roomService, connections } = setup();
+		const room = roomService.createRoom(user, { settings });
+		const guest = { id: "guest", name: "Guest" };
+		roomService.joinRoom(guest, room.code);
+		const guestSocket = { send: vi.fn(), close: vi.fn() };
+		const ownSocket = { send: vi.fn(), close: vi.fn() };
+		connections.attach(guest.id, room.code, guestSocket);
+		connections.attach(user.id, room.code, ownSocket);
+		const response = await app.request(
+			`/api/rooms/${room.code.toLowerCase()}/leave`,
+			{ method: "POST", body: JSON.stringify({ playerId: "guest" }) },
+		);
+		expect(response.status).toBe(204);
+		expect(response.headers.get("Cache-Control")).toBe("no-store");
+		const snapshot = roomService.getRoom(room.code);
+		expect(snapshot.players).toEqual([guest]);
+		expect(snapshot.hostId).toBe(guest.id);
+		expect(JSON.parse(guestSocket.send.mock.calls[0]?.[0])).toEqual({
+			type: "room:snapshot",
+			snapshot,
+		});
+		expect(JSON.parse(ownSocket.send.mock.calls[0]?.[0])).toEqual({
+			type: "room:left",
+		});
+		expect(ownSocket.close).toHaveBeenCalledWith(1000, "Left room. ");
+		expect(roomService.getCurrentRoomCode(user.id)).toBeNull();
+	});
+	it("is a no-op for a room the caller is not in", async () => {
+		const { app, roomService } = setup();
+		const owner = { id: "owner", name: "Owner" };
+		const room = roomService.createRoom(owner, { settings });
+		const leave = vi.spyOn(roomService, "leaveRoom");
+		for (const code of [room.code, "ABC234"]) {
+			const response = await app.request(`/api/rooms/${code}/leave`, {
+				method: "POST",
+			});
+			expect(response.status).toBe(204);
+		}
+		expect(leave).not.toHaveBeenCalled();
+		expect(roomService.getRoom(room.code).players).toEqual([owner]);
+	});
+	it("returns stable errors for authentication, invalid codes and origins", async () => {
+		const unauthenticated = await setup(false).app.request(
+			"/api/rooms/ABC234/leave",
+			{ method: "POST" },
+		);
+		expect(unauthenticated.status).toBe(401);
+		const { app, getSession } = setup();
+		const invalid = await app.request("/api/rooms/invalid/leave", {
+			method: "POST",
+		});
+		expect(invalid.status).toBe(400);
+		expect(await invalid.json()).toMatchObject({
+			error: { code: "INVALID_INPUT" },
+		});
+		getSession.mockClear();
+		const foreign = await app.request("/api/rooms/ABC234/leave", {
+			method: "POST",
+			headers: { Origin: "https://evil.example" },
+		});
+		expect(foreign.status).toBe(403);
+		expect(getSession).not.toHaveBeenCalled();
 	});
 });
 

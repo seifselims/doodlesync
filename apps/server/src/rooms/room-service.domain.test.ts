@@ -17,6 +17,16 @@ describe("RoomService", () => {
 		generateCode.mockReturnValue("ABC234");
 	});
 
+	it("reports only the caller's current room and clears it after leaving", () => {
+		const service = new RoomService();
+		expect(service.getCurrentRoomCode(player.id)).toBeNull();
+		const room = service.createRoom(player, { settings });
+		expect(service.getCurrentRoomCode(player.id)).toBe(room.code);
+		expect(service.getCurrentRoomCode("someone-else")).toBeNull();
+		service.leaveRoom(player, room.code);
+		expect(service.getCurrentRoomCode(player.id)).toBeNull();
+	});
+
 	it("creates a public snapshot with the creator as host and first player", () => {
 		const service = new RoomService();
 		const room = service.createRoom(player, { settings });

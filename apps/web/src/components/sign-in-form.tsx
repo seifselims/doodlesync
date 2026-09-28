@@ -1,142 +1,147 @@
+"use client";
+
+import { Alert } from "@doodlesync/ui/components/alert";
 import { Button } from "@doodlesync/ui/components/button";
-import { Input } from "@doodlesync/ui/components/input";
-import { Label } from "@doodlesync/ui/components/label";
 import { useForm } from "@tanstack/react-form";
-import { useRouter } from "next/navigation";
+import { LogIn } from "lucide-react";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useState } from "react";
 import { toast } from "sonner";
 import z from "zod";
 
 import { authClient } from "@/lib/auth-client";
+import {
+	type AuthErrorCopy,
+	describeAuthError,
+	networkAuthError,
+} from "@/lib/auth-errors";
+import { safeNextPath, withNext } from "@/lib/safe-redirect";
 
-import Loader from "./loader";
+import { AuthField, fieldErrors } from "./auth-fields";
 
-export default function SignInForm({
-	onSwitchToSignUp,
-}: {
-	onSwitchToSignUp: () => void;
-}) {
+const signInSchema = z.object({
+	email: z.email("Enter a valid email address."),
+	password: z.string().min(1, "Enter your password."),
+});
+
+export default function SignInForm() {
 	const router = useRouter();
-	const { isPending } = authClient.useSession();
+	const next = useSearchParams().get("next");
+	const [formError, setFormError] = useState<AuthErrorCopy | null>(null);
 
 	const form = useForm({
-		defaultValues: {
-			email: "",
-			password: "",
-		},
+		defaultValues: { email: "", password: "" },
+		validators: { onBlur: signInSchema, onSubmit: signInSchema },
 		onSubmit: async ({ value }) => {
-			await authClient.signIn.email(
-				{
-					email: value.email,
-					password: value.password,
-				},
-				{
-					onSuccess: () => {
-						router.push("/dashboard");
-						toast.success("Sign in successful");
+			setFormError(null);
+			try {
+				await authClient.signIn.email(
+					{ email: value.email.trim(), password: value.password },
+					{
+						onSuccess: (context) => {
+							toast.success(`Welcome back, ${context.data.user.name}!`);
+							router.replace(safeNextPath(next));
+						},
+						onError: (context) => {
+							setFormError(describeAuthError(context.error, "sign-in"));
+						},
 					},
-					onError: (error) => {
-						toast.error(error.error.message || error.error.statusText);
-					},
-				},
-			);
-		},
-		validators: {
-			onSubmit: z.object({
-				email: z.email("Invalid email address"),
-				password: z.string().min(8, "Password must be at least 8 characters"),
-			}),
+				);
+			} catch {
+				setFormError(networkAuthError());
+			}
 		},
 	});
 
-	if (isPending) {
-		return <Loader />;
-	}
-
 	return (
-		<div className="mx-auto mt-10 w-full max-w-md p-6">
-			<h1 className="mb-6 text-center font-bold text-3xl">Welcome Back</h1>
-
-			<form
-				onSubmit={(e) => {
-					e.preventDefault();
-					e.stopPropagation();
-					form.handleSubmit();
-				}}
-				className="space-y-4"
-			>
-				<div>
-					<form.Field name="email">
-						{(field) => (
-							<div className="space-y-2">
-								<Label htmlFor={field.name}>Email</Label>
-								<Input
-									id={field.name}
-									name={field.name}
-									type="email"
-									value={field.state.value}
-									onBlur={field.handleBlur}
-									onChange={(e) => field.handleChange(e.target.value)}
-								/>
-								{field.state.meta.errors.map((error) => (
-									<p key={error?.message} className="text-red-500">
-										{error?.message}
-									</p>
-								))}
-							</div>
-						)}
-					</form.Field>
-				</div>
-
-				<div>
-					<form.Field name="password">
-						{(field) => (
-							<div className="space-y-2">
-								<Label htmlFor={field.name}>Password</Label>
-								<Input
-									id={field.name}
-									name={field.name}
-									type="password"
-									value={field.state.value}
-									onBlur={field.handleBlur}
-									onChange={(e) => field.handleChange(e.target.value)}
-								/>
-								{field.state.meta.errors.map((error) => (
-									<p key={error?.message} className="text-red-500">
-										{error?.message}
-									</p>
-								))}
-							</div>
-						)}
-					</form.Field>
-				</div>
-
-				<form.Subscribe
-					selector={(state) => ({
-						canSubmit: state.canSubmit,
-						isSubmitting: state.isSubmitting,
-					})}
+		<form
+			noValidate
+			className="space-y-5"
+			onSubmit={(event) => {
+				event.preventDefault();
+				event.stopPropagation();
+				form.handleSubmit();
+			}}
+		>
+			{formError && (
+				<Alert
+					title={formError.title}
+					action={
+						formError.suggest === "sign-up" && (
+							<Button
+								size="sm"
+								variant="outline"
+								render={<Link href={withNext("/signup", next)} />}
+								nativeButton={false}
+							>
+								Create an account
+							</Button>
+						)
+					}
 				>
-					{({ canSubmit, isSubmitting }) => (
-						<Button
-							type="submit"
-							className="w-full"
-							disabled={!canSubmit || isSubmitting}
-						>
-							{isSubmitting ? "Submitting..." : "Sign In"}
-						</Button>
-					)}
-				</form.Subscribe>
-			</form>
-
-			<div className="mt-4 text-center">
-				<Button
-					variant="link"
-					onClick={onSwitchToSignUp}
-					className="text-indigo-600 hover:text-indigo-800"
+					{formError.description}
+				</Alert>
+			)}
+			<form.Field name="email">
+				{(field) => (
+					<AuthField
+						id="email"
+						label="Email"
+						type="email"
+						autoComplete="email"
+						placeholder="you@example.com"
+						autoFocus
+						value={field.state.value}
+						errors={fieldErrors(
+							field.state.meta,
+							field.form.state.submissionAttempts > 0,
+						)}
+						onChange={field.handleChange}
+						onBlur={field.handleBlur}
+					/>
+				)}
+			</form.Field>
+			<form.Field name="password">
+				{(field) => (
+					<AuthField
+						id="password"
+						label="Password"
+						type="password"
+						autoComplete="current-password"
+						value={field.state.value}
+						errors={fieldErrors(
+							field.state.meta,
+							field.form.state.submissionAttempts > 0,
+						)}
+						onChange={field.handleChange}
+						onBlur={field.handleBlur}
+					/>
+				)}
+			</form.Field>
+			<form.Subscribe selector={(state) => state.isSubmitting}>
+				{(isSubmitting) => (
+					<Button
+						type="submit"
+						variant="go"
+						size="lg"
+						className="w-full"
+						disabled={isSubmitting}
+					>
+						<LogIn aria-hidden="true" />
+						{isSubmitting ? "Signing in…" : "Sign in"}
+					</Button>
+				)}
+			</form.Subscribe>
+			<p className="text-center text-muted-foreground text-sm">
+				New to DoodleSync?{" "}
+				<Link
+					href={withNext("/signup", next)}
+					className="font-bold text-primary underline-offset-4 hover:underline"
 				>
-					Need an account? Sign Up
-				</Button>
-			</div>
-		</div>
+					Create an account
+				</Link>
+			</p>
+		</form>
 	);
 }

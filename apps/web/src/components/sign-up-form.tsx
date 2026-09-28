@@ -1,167 +1,182 @@
+"use client";
+
+import { Alert } from "@doodlesync/ui/components/alert";
 import { Button } from "@doodlesync/ui/components/button";
-import { Input } from "@doodlesync/ui/components/input";
-import { Label } from "@doodlesync/ui/components/label";
 import { useForm } from "@tanstack/react-form";
-import { useRouter } from "next/navigation";
+import { Sparkles } from "lucide-react";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useState } from "react";
 import { toast } from "sonner";
 import z from "zod";
 
 import { authClient } from "@/lib/auth-client";
+import {
+	type AuthErrorCopy,
+	describeAuthError,
+	networkAuthError,
+} from "@/lib/auth-errors";
+import { safeNextPath, withNext } from "@/lib/safe-redirect";
 
-import Loader from "./loader";
+import { AuthField, fieldErrors } from "./auth-fields";
 
-export default function SignUpForm({
-	onSwitchToSignIn,
-}: {
-	onSwitchToSignIn: () => void;
-}) {
+// Better Auth accepts 8–128 character passwords by default.
+const signUpSchema = z.object({
+	name: z
+		.string()
+		.trim()
+		.min(2, "Use at least 2 characters.")
+		.max(24, "Keep it to 24 characters so it fits the scoreboard."),
+	email: z.email("Enter a valid email address."),
+	password: z
+		.string()
+		.min(8, "Use at least 8 characters.")
+		.max(128, "Use 128 characters or fewer."),
+});
+
+export default function SignUpForm() {
 	const router = useRouter();
-	const { isPending } = authClient.useSession();
+	const next = useSearchParams().get("next");
+	const [formError, setFormError] = useState<AuthErrorCopy | null>(null);
 
 	const form = useForm({
-		defaultValues: {
-			email: "",
-			password: "",
-			name: "",
-		},
+		defaultValues: { name: "", email: "", password: "" },
+		validators: { onBlur: signUpSchema, onSubmit: signUpSchema },
 		onSubmit: async ({ value }) => {
-			await authClient.signUp.email(
-				{
-					email: value.email,
-					password: value.password,
-					name: value.name,
-				},
-				{
-					onSuccess: () => {
-						router.push("/dashboard");
-						toast.success("Sign up successful");
+			setFormError(null);
+			try {
+				await authClient.signUp.email(
+					{
+						name: value.name.trim(),
+						email: value.email.trim(),
+						password: value.password,
 					},
-					onError: (error) => {
-						toast.error(error.error.message || error.error.statusText);
+					{
+						onSuccess: (context) => {
+							toast.success(`Welcome, ${context.data.user.name}!`, {
+								description: "Your account is ready. Let’s draw.",
+							});
+							router.replace(safeNextPath(next));
+						},
+						onError: (context) => {
+							setFormError(describeAuthError(context.error, "sign-up"));
+						},
 					},
-				},
-			);
-		},
-		validators: {
-			onSubmit: z.object({
-				name: z.string().min(2, "Name must be at least 2 characters"),
-				email: z.email("Invalid email address"),
-				password: z.string().min(8, "Password must be at least 8 characters"),
-			}),
+				);
+			} catch {
+				setFormError(networkAuthError());
+			}
 		},
 	});
 
-	if (isPending) {
-		return <Loader />;
-	}
-
 	return (
-		<div className="mx-auto mt-10 w-full max-w-md p-6">
-			<h1 className="mb-6 text-center font-bold text-3xl">Create Account</h1>
-
-			<form
-				onSubmit={(e) => {
-					e.preventDefault();
-					e.stopPropagation();
-					form.handleSubmit();
-				}}
-				className="space-y-4"
-			>
-				<div>
-					<form.Field name="name">
-						{(field) => (
-							<div className="space-y-2">
-								<Label htmlFor={field.name}>Name</Label>
-								<Input
-									id={field.name}
-									name={field.name}
-									value={field.state.value}
-									onBlur={field.handleBlur}
-									onChange={(e) => field.handleChange(e.target.value)}
-								/>
-								{field.state.meta.errors.map((error) => (
-									<p key={error?.message} className="text-red-500">
-										{error?.message}
-									</p>
-								))}
-							</div>
-						)}
-					</form.Field>
-				</div>
-
-				<div>
-					<form.Field name="email">
-						{(field) => (
-							<div className="space-y-2">
-								<Label htmlFor={field.name}>Email</Label>
-								<Input
-									id={field.name}
-									name={field.name}
-									type="email"
-									value={field.state.value}
-									onBlur={field.handleBlur}
-									onChange={(e) => field.handleChange(e.target.value)}
-								/>
-								{field.state.meta.errors.map((error) => (
-									<p key={error?.message} className="text-red-500">
-										{error?.message}
-									</p>
-								))}
-							</div>
-						)}
-					</form.Field>
-				</div>
-
-				<div>
-					<form.Field name="password">
-						{(field) => (
-							<div className="space-y-2">
-								<Label htmlFor={field.name}>Password</Label>
-								<Input
-									id={field.name}
-									name={field.name}
-									type="password"
-									value={field.state.value}
-									onBlur={field.handleBlur}
-									onChange={(e) => field.handleChange(e.target.value)}
-								/>
-								{field.state.meta.errors.map((error) => (
-									<p key={error?.message} className="text-red-500">
-										{error?.message}
-									</p>
-								))}
-							</div>
-						)}
-					</form.Field>
-				</div>
-
-				<form.Subscribe
-					selector={(state) => ({
-						canSubmit: state.canSubmit,
-						isSubmitting: state.isSubmitting,
-					})}
+		<form
+			noValidate
+			className="space-y-5"
+			onSubmit={(event) => {
+				event.preventDefault();
+				event.stopPropagation();
+				form.handleSubmit();
+			}}
+		>
+			{formError && (
+				<Alert
+					title={formError.title}
+					action={
+						formError.suggest === "sign-in" && (
+							<Button
+								size="sm"
+								variant="outline"
+								render={<Link href={withNext("/login", next)} />}
+								nativeButton={false}
+							>
+								Go to sign in
+							</Button>
+						)
+					}
 				>
-					{({ canSubmit, isSubmitting }) => (
-						<Button
-							type="submit"
-							className="w-full"
-							disabled={!canSubmit || isSubmitting}
-						>
-							{isSubmitting ? "Submitting..." : "Sign Up"}
-						</Button>
-					)}
-				</form.Subscribe>
-			</form>
-
-			<div className="mt-4 text-center">
-				<Button
-					variant="link"
-					onClick={onSwitchToSignIn}
-					className="text-indigo-600 hover:text-indigo-800"
+					{formError.description}
+				</Alert>
+			)}
+			<form.Field name="name">
+				{(field) => (
+					<AuthField
+						id="name"
+						label="Player name"
+						autoComplete="nickname"
+						placeholder="Picasso"
+						maxLength={24}
+						autoFocus
+						hint="Other players see this in the lobby."
+						value={field.state.value}
+						errors={fieldErrors(
+							field.state.meta,
+							field.form.state.submissionAttempts > 0,
+						)}
+						onChange={field.handleChange}
+						onBlur={field.handleBlur}
+					/>
+				)}
+			</form.Field>
+			<form.Field name="email">
+				{(field) => (
+					<AuthField
+						id="email"
+						label="Email"
+						type="email"
+						autoComplete="email"
+						placeholder="you@example.com"
+						value={field.state.value}
+						errors={fieldErrors(
+							field.state.meta,
+							field.form.state.submissionAttempts > 0,
+						)}
+						onChange={field.handleChange}
+						onBlur={field.handleBlur}
+					/>
+				)}
+			</form.Field>
+			<form.Field name="password">
+				{(field) => (
+					<AuthField
+						id="password"
+						label="Password"
+						type="password"
+						autoComplete="new-password"
+						hint="At least 8 characters."
+						value={field.state.value}
+						errors={fieldErrors(
+							field.state.meta,
+							field.form.state.submissionAttempts > 0,
+						)}
+						onChange={field.handleChange}
+						onBlur={field.handleBlur}
+					/>
+				)}
+			</form.Field>
+			<form.Subscribe selector={(state) => state.isSubmitting}>
+				{(isSubmitting) => (
+					<Button
+						type="submit"
+						variant="go"
+						size="lg"
+						className="w-full"
+						disabled={isSubmitting}
+					>
+						<Sparkles aria-hidden="true" />
+						{isSubmitting ? "Creating your account…" : "Create account"}
+					</Button>
+				)}
+			</form.Subscribe>
+			<p className="text-center text-muted-foreground text-sm">
+				Already have an account?{" "}
+				<Link
+					href={withNext("/login", next)}
+					className="font-bold text-primary underline-offset-4 hover:underline"
 				>
-					Already have an account? Sign In
-				</Button>
-			</div>
-		</div>
+					Sign in
+				</Link>
+			</p>
+		</form>
 	);
 }

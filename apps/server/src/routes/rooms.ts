@@ -2,23 +2,17 @@ import {
 	clientCommandSchema,
 	createRoomInputSchema,
 	type PlayerSnapshot,
+	roomCodeSchema,
 	type ServerEvent,
 	socketCloseCodes,
 } from "@doodlesync/shared";
 import { upgradeWebSocket } from "@hono/node-server";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { z } from "zod";
 import { CommandRateLimiter } from "../realtime/command-rate-limiter";
 import type { ConnectionRegistry } from "../realtime/connection-registry";
 import { RoomError } from "../rooms/room-error";
 import type { RoomService } from "../rooms/room-service";
-
-const roomCodeSchema = z
-	.string()
-	.trim()
-	.toUpperCase()
-	.regex(/^[A-Z2-9]{6}$/);
 
 export type RoomRouteDependencies = {
 	corsOrigin: string;
@@ -203,6 +197,24 @@ export function createRoomRoutes({
 		},
 	);
 
+	// Registered before "/:code" so "current" is never parsed as a room code.
+	routes.get("/current", async (c) => {
+		c.header("Cache-Control", "no-store");
+		const session = await getSession(c.req.raw.headers);
+		if (!session) {
+			return c.json(
+				{
+					error: {
+						code: "UNAUTHENTICATED",
+						message: "Sign in to see your room.",
+					},
+				},
+				401,
+			);
+		}
+		return c.json({ code: roomService.getCurrentRoomCode(session.user.id) });
+	});
+
 	routes.get("/:code", async (c) => {
 		c.header("Cache-Control", "no-store");
 		const session = await getSession(c.req.raw.headers);
@@ -303,6 +315,62 @@ export function createRoomRoutes({
 			throw error;
 		}
 	});
+	// HTTP leave works even while the player's socket is down or reconnecting.
+	routes.post("/:code/leave", async (c) => {
+		c.header("Cache-Control", "no-store");
+		const origin = c.req.header("Origin");
+		if (origin !== undefined && origin !== corsOrigin) {
+			return c.json(
+				{ error: { code: "INVALID_INPUT", message: "Origin is not allowed." } },
+				403,
+			);
+		}
+		const session = await getSession(c.req.raw.headers);
+		if (!session) {
+			return c.json(
+				{
+					error: {
+						code: "UNAUTHENTICATED",
+						message: "Sign in to leave a room.",
+					},
+				},
+				401,
+			);
+		}
+		const code = roomCodeSchema.safeParse(c.req.param("code"));
+		if (!code.success) {
+			return c.json(
+				{ error: { code: "INVALID_INPUT", message: "Invalid room code." } },
+				400,
+			);
+		}
+		const player = { id: session.user.id, name: session.user.name };
+		// Leaving a room you are not in is a no-op, so retries are safe.
+		if (roomService.getCurrentRoomCode(player.id) !== code.data) {
+			return c.body(null, 204);
+		}
+		const timer = membershipTimers.get(player.id);
+		if (timer) {
+			clearTimeout(timer);
+			membershipTimers.delete(player.id);
+		}
+		const snapshot = roomService.leaveRoom(player, code.data);
+		if (snapshot) {
+			broadcastSnapshot(snapshot);
+		}
+		const connection = connections.get(player.id);
+		if (connection?.roomCode === code.data) {
+			const event: ServerEvent = { type: "room:left" };
+			try {
+				connection.socket.send(JSON.stringify(event));
+				connection.socket.close(1000, "Left room. ");
+			} catch {
+				// The socket is already closing; detaching happens in onClose.
+			}
+		}
+		return c.body(null, 204);
+	});
+
 	routes.get(
 		"/:code/ws",
 		async (c, next) => {

@@ -97,6 +97,12 @@ export class RoomService {
 			players: Array.from(room.players.values(), (player) => ({ ...player })),
 		};
 	}
+	// The caller's own membership only; never pass a client-supplied player id.
+	getCurrentRoomCode(playerId: string): string | null {
+		const code = this.memberships.get(playerId);
+		return code !== undefined && this.findRoom(code) ? code : null;
+	}
+
 	// Transport callers must use this authorized lookup with session-derived identity.
 	getRoomForMember(playerId: string, code: string) {
 		const snapshot = this.getRoom(code);
