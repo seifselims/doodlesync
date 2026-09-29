@@ -1,3 +1,9 @@
+export {
+	CHAT_HISTORY_LIMIT,
+	CHAT_MESSAGE_MAX_LENGTH,
+	type ChatMessage,
+	chatMessageSchema,
+} from "./chat-message";
 export { type ClientCommand, clientCommandSchema } from "./client-commands";
 export {
 	type ErrorCode,

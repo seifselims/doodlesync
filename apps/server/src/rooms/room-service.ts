@@ -1,4 +1,7 @@
+import { randomUUID } from "node:crypto";
 import {
+	CHAT_HISTORY_LIMIT,
+	chatMessageSchema,
 	createRoomInputSchema,
 	type PlayerSnapshot,
 	roomSettingsSchema,
@@ -87,6 +90,7 @@ export class RoomService {
 			settings: createInput.settings,
 			players: new Map([[player.id, { ...player }]]),
 			emptySince: null,
+			chat: [],
 		};
 		this.rooms.set(code, room);
 		this.memberships.set(player.id, code);
@@ -195,5 +199,39 @@ export class RoomService {
 		}
 
 		return this.getRoom(normalizedCode);
+	}
+
+	// Author and timestamp come from the server; the caller supplies only text.
+	postChatMessage(player: PlayerSnapshot, code: string, text: string) {
+		const snapshot = this.getRoomForMember(player.id, code);
+		const room = this.findRoom(snapshot.code);
+		const author = room?.players.get(player.id);
+		if (!room || !author) {
+			throw new RoomError("NOT_IN_ROOM", "You are not a member of this room.");
+		}
+
+		const result = chatMessageSchema.safeParse({
+			id: randomUUID(),
+			authorId: author.id,
+			authorName: author.name,
+			text: text.trim(),
+			sentAt: this.now(),
+		});
+		if (!result.success) {
+			throw new RoomError("INVALID_INPUT", "Invalid chat message.");
+		}
+
+		room.chat.push(result.data);
+		if (room.chat.length > CHAT_HISTORY_LIMIT) {
+			room.chat.splice(0, room.chat.length - CHAT_HISTORY_LIMIT);
+		}
+		return { ...result.data };
+	}
+
+	// Oldest first. Members only; never pass a client-supplied player id.
+	getChatHistory(playerId: string, code: string) {
+		const snapshot = this.getRoomForMember(playerId, code);
+		const room = this.findRoom(snapshot.code);
+		return room ? room.chat.map((message) => ({ ...message })) : [];
 	}
 }

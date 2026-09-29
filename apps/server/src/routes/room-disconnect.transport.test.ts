@@ -4,6 +4,7 @@ import {
 	roomSnapshotSchema,
 	type ServerEvent,
 	serverEventsSchema,
+	socketCloseCodes,
 } from "@doodlesync/shared";
 import { serve } from "@hono/node-server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -108,7 +109,7 @@ describe("room socket commands and membership lifecycle", () => {
 				events.push(serverEventsSchema.parse(JSON.parse(data.toString()))),
 			);
 			await once(socket, "open");
-			await eventually(() => events.length === 1);
+			await eventually(() => events.length >= 1);
 			return { socket, events };
 		}
 		async function disconnect(socket: WebSocket, id: string) {
@@ -403,5 +404,137 @@ describe("room socket commands and membership lifecycle", () => {
 		expect(roomService.getRoomForMember(host.id, nextRoom.code)).toEqual(
 			nextRoom,
 		);
+	});
+
+	it("broadcasts chat with the session author to this room's members only", async () => {
+		const { roomService, room, connect } = await setup();
+		const owner = await connect(host.id);
+		const member = await connect(guest.id);
+		const otherRoom = roomService.createRoom(
+			{ id: "outsider", name: "Outsider" },
+			{ settings },
+		);
+		const outsider = await connect("outsider", otherRoom.code);
+		member.socket.send(JSON.stringify({ type: "chat:send", text: "  hi  " }));
+		await eventually(
+			() => owner.events.length === 2 && member.events.length === 2,
+		);
+		const [message] = roomService.getChatHistory(guest.id, room.code);
+		expect(message).toMatchObject({
+			authorId: guest.id,
+			authorName: guest.name,
+			text: "hi",
+		});
+		expect(owner.events[1]).toEqual({ type: "chat:message", message });
+		expect(member.events[1]).toEqual(owner.events[1]);
+		expect(outsider.events).toHaveLength(1);
+		expect(roomService.getChatHistory("outsider", otherRoom.code)).toEqual([]);
+	});
+
+	it.each([
+		["missing text", { type: "chat:send" }],
+		["whitespace-only text", { type: "chat:send", text: " \n\t " }],
+		["oversized text", { type: "chat:send", text: "a".repeat(201) }],
+		["forged author", { type: "chat:send", text: "hi", authorId: host.id }],
+		["forged timestamp", { type: "chat:send", text: "hi", sentAt: 0 }],
+	])("rejects chat with %s without broadcasting", async (_label, command) => {
+		const { roomService, room, connect } = await setup();
+		const owner = await connect(host.id);
+		const member = await connect(guest.id);
+		member.socket.send(JSON.stringify(command));
+		await eventually(() => member.events.length === 2);
+		expect(member.events[1]).toMatchObject({
+			type: "error",
+			error: { code: "INVALID_INPUT" },
+		});
+		expect(owner.events).toHaveLength(1);
+		expect(roomService.getChatHistory(host.id, room.code)).toEqual([]);
+	});
+
+	it("rechecks membership for chat after the socket opened", async () => {
+		const { roomService, room, connect } = await setup();
+		const owner = await connect(host.id);
+		const member = await connect(guest.id);
+		roomService.leaveRoom(guest, room.code);
+		member.socket.send(JSON.stringify({ type: "chat:send", text: "hi" }));
+		await eventually(() => member.events.length === 2);
+		expect(member.events[1]).toMatchObject({
+			type: "error",
+			error: { code: "NOT_IN_ROOM" },
+		});
+		expect(owner.events).toHaveLength(1);
+		expect(roomService.getChatHistory(host.id, room.code)).toEqual([]);
+	});
+
+	it("closes a chat flood with the rate-limit code after the burst", async () => {
+		// Freeze only the limiter's clock so no tokens refill during the burst.
+		const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+		try {
+			const { roomService, room, connect } = await setup();
+			const owner = await connect(host.id);
+			const member = await connect(guest.id);
+			const closed = once(member.socket, "close");
+			for (let i = 0; i < 11; i++) {
+				member.socket.send(
+					JSON.stringify({ type: "chat:send", text: `message ${i}` }),
+				);
+			}
+			const [code] = await closed;
+			expect(code).toBe(socketCloseCodes.rateLimited);
+			await eventually(() => owner.events.length === 11);
+			const texts = roomService
+				.getChatHistory(host.id, room.code)
+				.map((message) => message.text);
+			expect(texts).toHaveLength(10);
+			expect(texts).not.toContain("message 10");
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
+	it("sends recent chat only to a reconnecting socket, after its snapshot", async () => {
+		const { roomService, room, connect, disconnect } = await setup();
+		const owner = await connect(host.id);
+		const member = await connect(guest.id);
+		roomService.postChatMessage(host, room.code, "first");
+		roomService.postChatMessage(guest, room.code, "second");
+		await disconnect(member.socket, guest.id);
+
+		const returning = await connect(guest.id);
+		await eventually(() => returning.events.length === 2);
+		expect(returning.events[0]).toMatchObject({ type: "room:snapshot" });
+		expect(returning.events[1]).toEqual({
+			type: "chat:history",
+			messages: roomService.getChatHistory(guest.id, room.code),
+		});
+		expect(
+			returning.events[1]?.type === "chat:history" &&
+				returning.events[1].messages.map((message) => message.text),
+		).toEqual(["first", "second"]);
+		expect(owner.events).toHaveLength(1);
+	});
+
+	it("sends each room only its own history and none for a room without chat", async () => {
+		const { roomService, room, connect } = await setup();
+		roomService.postChatMessage(host, room.code, "in this room");
+		const otherRoom = roomService.createRoom(
+			{ id: "outsider", name: "Outsider" },
+			{ settings },
+		);
+		const outsider = await connect("outsider", otherRoom.code);
+		const owner = await connect(host.id);
+		await eventually(() => owner.events.length === 2);
+		expect(owner.events[1]).toMatchObject({
+			type: "chat:history",
+			messages: [{ text: "in this room" }],
+		});
+		// Give any stray history time to arrive before asserting its absence.
+		await wait(50);
+		expect(outsider.events).toEqual([
+			{
+				type: "room:snapshot",
+				snapshot: roomService.getRoom(otherRoom.code),
+			},
+		]);
 	});
 });

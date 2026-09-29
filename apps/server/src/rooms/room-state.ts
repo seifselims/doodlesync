@@ -1,4 +1,8 @@
-import type { PlayerSnapshot, RoomSettings } from "@doodlesync/shared";
+import type {
+	ChatMessage,
+	PlayerSnapshot,
+	RoomSettings,
+} from "@doodlesync/shared";
 export type RoomState = {
 	code: string;
 	hostId: string | null;
@@ -6,4 +10,5 @@ export type RoomState = {
 	settings: RoomSettings;
 	players: Map<string, PlayerSnapshot>;
 	emptySince: number | null;
+	chat: ChatMessage[];
 };

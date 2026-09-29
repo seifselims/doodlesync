@@ -1,6 +1,9 @@
 "use client";
 
 import {
+	CHAT_HISTORY_LIMIT,
+	type ChatMessage,
+	type ClientCommand,
 	type RoomSnapshot,
 	serverEventsSchema,
 	socketCloseCodes,
@@ -70,8 +73,16 @@ export function useRoomConnection(code: string | null, userId: string) {
 	const [connection, setConnection] = useState<ConnectionState>("connecting");
 	const [blocker, setBlocker] = useState<RoomBlocker | null>(null);
 	const [generation, setGeneration] = useState(0);
+	const [messages, setMessages] = useState<ChatMessage[]>([]);
+	const socketRef = useRef<WebSocket | null>(null);
 	// Set while this tab is deliberately leaving, so the socket's close is expected.
 	const leavingRef = useRef(false);
+
+	// Messages belong to one room; a different room starts with an empty chat.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reset only when the room changes
+	useEffect(() => {
+		setMessages([]);
+	}, [code]);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: `generation` restarts the connection on retry
 	useEffect(() => {
@@ -130,6 +141,7 @@ export function useRoomConnection(code: string | null, userId: string) {
 
 			const ws = new WebSocket(roomSocketUrl(code as string));
 			socket = ws;
+			socketRef.current = ws;
 			ws.onopen = () => {
 				if (attempt > 0) toast.success("Back in the room");
 				attempt = 0;
@@ -143,7 +155,13 @@ export function useRoomConnection(code: string | null, userId: string) {
 					return;
 				}
 				const event = serverEventsSchema.safeParse(data);
-				if (!event.success) return;
+				if (!event.success) {
+					// Usually a tab running older code than the server; reload to fix.
+					if (process.env.NODE_ENV !== "production") {
+						console.warn("Ignored unrecognized server event", data);
+					}
+					return;
+				}
 				switch (event.data.type) {
 					case "room:snapshot":
 						applySnapshot(event.data.snapshot);
@@ -153,6 +171,18 @@ export function useRoomConnection(code: string | null, userId: string) {
 						if (!leavingRef.current) stop({ kind: "removed" });
 						else disposed = true;
 						break;
+					// The server's recent messages replace ours, so a reconnect
+					// fills any gap without duplicating what we already had.
+					case "chat:history":
+						setMessages(event.data.messages);
+						break;
+					case "chat:message": {
+						const message = event.data.message;
+						setMessages((current) =>
+							[...current, message].slice(-CHAT_HISTORY_LIMIT),
+						);
+						break;
+					}
 					case "error":
 						toast.error(event.data.error.message);
 						break;
@@ -161,6 +191,7 @@ export function useRoomConnection(code: string | null, userId: string) {
 			ws.onclose = (event) => {
 				if (socket !== ws) return;
 				socket = null;
+				if (socketRef.current === ws) socketRef.current = null;
 				if (disposed || leavingRef.current) return;
 				if (event.code === socketCloseCodes.replaced) {
 					stop({ kind: "replaced" });
@@ -187,6 +218,7 @@ export function useRoomConnection(code: string | null, userId: string) {
 			clearTimeout(retryTimer);
 			window.removeEventListener("online", onOnline);
 			socket?.close(1000, "Left the page.");
+			socketRef.current = null;
 		};
 	}, [code, userId, generation]);
 
@@ -194,6 +226,18 @@ export function useRoomConnection(code: string | null, userId: string) {
 		snapshot,
 		connection,
 		blocker,
+		messages,
+		/**
+		 * Sends chat text; the server adds the author and time and broadcasts it
+		 * back. Returns false when there is no open connection to send on.
+		 */
+		sendChat: (text: string) => {
+			const socket = socketRef.current;
+			if (socket?.readyState !== WebSocket.OPEN) return false;
+			const command: ClientCommand = { type: "chat:send", text };
+			socket.send(JSON.stringify(command));
+			return true;
+		},
 		/** Starts over: rejoins and reconnects (e.g. after "Try again"). */
 		retry: () => setGeneration((value) => value + 1),
 		/** Marks the upcoming socket close as intentional. */

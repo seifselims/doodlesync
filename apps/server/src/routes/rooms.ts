@@ -36,15 +36,16 @@ export function createRoomRoutes({
 	const routes = new Hono<{ Variables: SocketVariables }>();
 	const commandLimiter = new CommandRateLimiter();
 	const membershipTimers = new Map<string, ReturnType<typeof setTimeout>>();
-	const broadcastSnapshot = (snapshot: ReturnType<RoomService["getRoom"]>) => {
-		const event: ServerEvent = {
-			type: "room:snapshot",
-			snapshot,
-		};
+	// Sends an event to every member whose live socket is in this room.
+	const broadcastToRoom = (
+		roomCode: string,
+		players: PlayerSnapshot[],
+		event: ServerEvent,
+	) => {
 		const message = JSON.stringify(event);
-		for (const member of snapshot.players) {
+		for (const member of players) {
 			const connection = connections.get(member.id);
-			if (!connection || connection.roomCode !== snapshot.code) {
+			if (!connection || connection.roomCode !== roomCode) {
 				continue;
 			}
 			try {
@@ -53,6 +54,12 @@ export function createRoomRoutes({
 				connections.detach(member.id, connection.socket);
 			}
 		}
+	};
+	const broadcastSnapshot = (snapshot: ReturnType<RoomService["getRoom"]>) => {
+		broadcastToRoom(snapshot.code, snapshot.players, {
+			type: "room:snapshot",
+			snapshot,
+		});
 	};
 
 	// Used both before the first socket attaches and after a disconnect.
@@ -452,6 +459,12 @@ export function createRoomRoutes({
 					}
 					const event: ServerEvent = { type: "room:snapshot", snapshot };
 					ws.send(JSON.stringify(event));
+					// Catch this socket up on recent chat; skipped while the room has none.
+					const messages = roomService.getChatHistory(player.id, roomCode);
+					if (messages.length > 0) {
+						const history: ServerEvent = { type: "chat:history", messages };
+						ws.send(JSON.stringify(history));
+					}
 				},
 				onClose: (_event, ws) => {
 					const detached = connections.detach(player.id, ws);
@@ -518,6 +531,19 @@ export function createRoomRoutes({
 									command.settings,
 								);
 								broadcastSnapshot(snapshot);
+								break;
+							}
+							case "chat:send": {
+								const message = roomService.postChatMessage(
+									player,
+									roomCode,
+									command.text,
+								);
+								const room = roomService.getRoom(roomCode);
+								broadcastToRoom(room.code, room.players, {
+									type: "chat:message",
+									message: message,
+								});
 								break;
 							}
 						}

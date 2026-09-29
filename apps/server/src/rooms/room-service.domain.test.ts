@@ -1,4 +1,8 @@
-import { roomSnapshotSchema } from "@doodlesync/shared";
+import {
+	CHAT_MESSAGE_MAX_LENGTH,
+	chatMessageSchema,
+	roomSnapshotSchema,
+} from "@doodlesync/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ZodError } from "zod";
 import { generateRoomCode } from "./room-code";
@@ -455,5 +459,147 @@ describe("RoomService", () => {
 				);
 			},
 		);
+	});
+
+	describe("chat", () => {
+		const other = { id: "user-2", name: "Omar" };
+		const notFound = expect.objectContaining({ code: "ROOM_NOT_FOUND" });
+		const notInRoom = expect.objectContaining({ code: "NOT_IN_ROOM" });
+		const invalid = expect.objectContaining({ code: "INVALID_INPUT" });
+
+		it("assigns the author from room membership and the time from the clock", () => {
+			const service = new RoomService({ now: () => 1_000 });
+			const room = service.createRoom(player, { settings });
+
+			const message = service.postChatMessage(
+				{ id: player.id, name: "Forged Name" },
+				room.code,
+				"hello",
+			);
+
+			expect(message).toEqual({
+				id: expect.any(String),
+				authorId: player.id,
+				authorName: player.name,
+				text: "hello",
+				sentAt: 1_000,
+			});
+			expect(chatMessageSchema.safeParse(message).success).toBe(true);
+			expect(service.getChatHistory(player.id, room.code)).toEqual([message]);
+		});
+
+		it("trims text, normalizes the room code and gives each message its own id", () => {
+			const service = new RoomService();
+			const room = service.createRoom(player, { settings });
+
+			const first = service.postChatMessage(player, " abc234 ", "  hi  ");
+			const second = service.postChatMessage(player, room.code, "hi");
+
+			expect(first.text).toBe("hi");
+			expect(first.id).not.toBe(second.id);
+		});
+
+		it("rejects nonmembers and missing rooms without storing anything", () => {
+			const service = new RoomService();
+			const room = service.createRoom(player, { settings });
+
+			expect(() =>
+				service.postChatMessage(other, room.code, "hi"),
+			).toThrowError(notInRoom);
+			expect(() =>
+				service.postChatMessage(player, "ZZZ999", "hi"),
+			).toThrowError(notFound);
+			expect(() => service.getChatHistory(other.id, room.code)).toThrowError(
+				notInRoom,
+			);
+			expect(service.getChatHistory(player.id, room.code)).toEqual([]);
+		});
+
+		it("rejects a player who has left the room", () => {
+			const service = new RoomService();
+			const room = service.createRoom(player, { settings });
+			service.joinRoom(other, room.code);
+			service.leaveRoom(other, room.code);
+
+			expect(() =>
+				service.postChatMessage(other, room.code, "hi"),
+			).toThrowError(notInRoom);
+		});
+
+		it.each(["", "   ", "\n\t ", "a".repeat(CHAT_MESSAGE_MAX_LENGTH + 1)])(
+			"rejects invalid text without storing it: %j",
+			(text) => {
+				const service = new RoomService();
+				const room = service.createRoom(player, { settings });
+
+				expect(() =>
+					service.postChatMessage(player, room.code, text),
+				).toThrowError(invalid);
+				expect(service.getChatHistory(player.id, room.code)).toEqual([]);
+			},
+		);
+
+		it("accepts text at the maximum length", () => {
+			const service = new RoomService();
+			const room = service.createRoom(player, { settings });
+			const text = "a".repeat(CHAT_MESSAGE_MAX_LENGTH);
+
+			expect(service.postChatMessage(player, room.code, text).text).toBe(text);
+		});
+
+		it("keeps only the newest 50 messages, oldest first", () => {
+			const service = new RoomService();
+			const room = service.createRoom(player, { settings });
+			for (let i = 0; i < 60; i++) {
+				service.postChatMessage(player, room.code, `message ${i}`);
+			}
+
+			const history = service.getChatHistory(player.id, room.code);
+
+			expect(history).toHaveLength(50);
+			expect(history[0]?.text).toBe("message 10");
+			expect(history.at(-1)?.text).toBe("message 59");
+		});
+
+		it("keeps each room's messages separate", () => {
+			const service = new RoomService();
+			const first = service.createRoom(player, { settings });
+			generateCode.mockReturnValue("XYZ789");
+			const second = service.createRoom(other, { settings });
+
+			service.postChatMessage(player, first.code, "in first");
+			service.postChatMessage(other, second.code, "in second");
+
+			expect(
+				service.getChatHistory(player.id, first.code).map((m) => m.text),
+			).toEqual(["in first"]);
+			expect(
+				service.getChatHistory(other.id, second.code).map((m) => m.text),
+			).toEqual(["in second"]);
+		});
+
+		it("never includes chat in room snapshots", () => {
+			const service = new RoomService();
+			const room = service.createRoom(player, { settings });
+			service.postChatMessage(player, room.code, "hi");
+
+			expect(service.getRoom(room.code)).not.toHaveProperty("chat");
+			expect(service.getRoomForMember(player.id, room.code)).toEqual(room);
+		});
+
+		it("isolates stored messages from returned copies", () => {
+			const service = new RoomService();
+			const room = service.createRoom(player, { settings });
+			const message = service.postChatMessage(player, room.code, "original");
+
+			message.text = "changed";
+			const history = service.getChatHistory(player.id, room.code);
+			for (const stored of history) stored.authorName = "changed";
+			history.push(message);
+
+			expect(service.getChatHistory(player.id, room.code)).toEqual([
+				{ ...message, text: "original" },
+			]);
+		});
 	});
 });

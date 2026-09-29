@@ -21,6 +21,7 @@ import { toast } from "sonner";
 
 import { useSignedInUser } from "@/components/auth-guard";
 import Loader from "@/components/loader";
+import { ChatPanel } from "@/components/room/chat-panel";
 import { PlayerList } from "@/components/room/player-list";
 import { RoomCodePanel } from "@/components/room/room-code-panel";
 import { describeRoomError } from "@/lib/room-errors";
@@ -33,8 +34,15 @@ export function RoomScreen({ rawCode }: { rawCode: string }) {
 	const user = useSignedInUser();
 	const parsed = roomCodeSchema.safeParse(rawCode);
 	const code = parsed.success ? parsed.data : null;
-	const { snapshot, connection, blocker, retry, markLeaving } =
-		useRoomConnection(code, user.id);
+	const {
+		snapshot,
+		connection,
+		blocker,
+		messages,
+		sendChat,
+		retry,
+		markLeaving,
+	} = useRoomConnection(code, user.id);
 	const [leaving, setLeaving] = useState(false);
 
 	// Keep one canonical URL per room (invite links may be typed in lowercase).
@@ -103,7 +111,7 @@ export function RoomScreen({ rawCode }: { rawCode: string }) {
 
 	return (
 		<main className="px-4 pt-8 pb-20 sm:pt-12">
-			<div className="mx-auto grid max-w-5xl items-start gap-8 lg:grid-cols-[1fr_1.3fr] lg:grid-rows-[auto_1fr]">
+			<div className="mx-auto grid max-w-5xl items-start gap-8 lg:grid-cols-[1fr_1.3fr] lg:grid-rows-[auto_1fr_auto]">
 				<div className="space-y-6 lg:col-start-1 lg:row-start-1">
 					<header className="space-y-1">
 						<p className="font-bold text-muted-foreground text-sm uppercase tracking-[0.12em]">
@@ -166,7 +174,23 @@ export function RoomScreen({ rawCode }: { rawCode: string }) {
 					</CardFooter>
 				</Card>
 
-				{/* After the players in reading order, so phones show code → players → rules. */}
+				{/* Phones read code → players → chat → rules; wide screens put chat below. */}
+				<Card size="sm" className="lg:col-span-2 lg:row-start-3">
+					<CardHeader>
+						<CardTitle>
+							<h2>Chat</h2>
+						</CardTitle>
+					</CardHeader>
+					<CardContent>
+						<ChatPanel
+							messages={messages}
+							currentUserId={user.id}
+							canSend={connection === "connected"}
+							onSend={sendChat}
+						/>
+					</CardContent>
+				</Card>
+
 				<div className="space-y-6 lg:col-start-1 lg:row-start-2">
 					<Card size="sm">
 						<CardHeader>
