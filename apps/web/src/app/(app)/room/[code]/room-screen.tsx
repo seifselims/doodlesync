@@ -22,6 +22,7 @@ import { toast } from "sonner";
 import { useSignedInUser } from "@/components/auth-guard";
 import Loader from "@/components/loader";
 import { ChatPanel } from "@/components/room/chat-panel";
+import { DrawingCanvas } from "@/components/room/drawing-canvas";
 import { PlayerList } from "@/components/room/player-list";
 import { RoomCodePanel } from "@/components/room/room-code-panel";
 import { describeRoomError } from "@/lib/room-errors";
@@ -188,6 +189,21 @@ export function RoomScreen({ rawCode }: { rawCode: string }) {
 							canSend={connection === "connected"}
 							onSend={sendChat}
 						/>
+					</CardContent>
+				</Card>
+
+				{/* Local-only for now: strokes are not sent to other players yet. */}
+				<Card size="sm" className="lg:col-span-2 lg:row-start-4">
+					<CardHeader>
+						<CardTitle>
+							<h2>Sketchpad</h2>
+						</CardTitle>
+						<CardDescription>
+							Try drawing. Only you can see it for now.
+						</CardDescription>
+					</CardHeader>
+					<CardContent>
+						<DrawingCanvas />
 					</CardContent>
 				</Card>
 

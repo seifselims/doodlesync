@@ -6,6 +6,22 @@ export {
 } from "./chat-message";
 export { type ClientCommand, clientCommandSchema } from "./client-commands";
 export {
+	BRUSH_WIDTHS,
+	CANVAS_ASPECT_RATIO,
+	DRAW_MAX_POINTS,
+	DRAW_MAX_WIDTH,
+	DRAW_MIN_WIDTH,
+	type DrawOperation,
+	type DrawPoint,
+	type DrawStroke,
+	type DrawTool,
+	drawColorSchema,
+	drawOperationSchema,
+	drawPointSchema,
+	drawStrokeSchema,
+	drawToolSchema,
+} from "./drawing";
+export {
 	type ErrorCode,
 	errorCodeSchema,
 	errorSchema,
