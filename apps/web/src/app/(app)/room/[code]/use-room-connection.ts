@@ -4,6 +4,7 @@ import {
 	CHAT_HISTORY_LIMIT,
 	type ChatMessage,
 	type ClientCommand,
+	type DrawOperation,
 	type RoomSnapshot,
 	serverEventsSchema,
 	socketCloseCodes,
@@ -27,6 +28,22 @@ export type RoomBlocker =
 	| { kind: "removed" };
 
 const MAX_RETRIES = 6;
+
+export type DrawingChange =
+	| { kind: "reset" }
+	| { kind: "operation"; operation: DrawOperation };
+
+/**
+ * The room's drawing as data: every operation since the last clear, kept
+ * outside React state so strokes don't re-render the page. The canvas reads
+ * `getOperations` when it mounts or resizes and subscribes to changes.
+ */
+export type RoomDrawing = {
+	getOperations: () => readonly DrawOperation[];
+	subscribe: (listener: (change: DrawingChange) => void) => () => void;
+	/** Sends this tab's own operation (already drawn); false when offline. */
+	send: (operation: DrawOperation) => boolean;
+};
 
 function retryDelay(attempt: number) {
 	return Math.min(1000 * 2 ** (attempt - 1), 10_000);
@@ -75,6 +92,10 @@ export function useRoomConnection(code: string | null, userId: string) {
 	const [generation, setGeneration] = useState(0);
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const socketRef = useRef<WebSocket | null>(null);
+	const drawingRef = useRef<DrawOperation[]>([]);
+	const drawingListenersRef = useRef(
+		new Set<(change: DrawingChange) => void>(),
+	);
 	// Set while this tab is deliberately leaving, so the socket's close is expected.
 	const leavingRef = useRef(false);
 
@@ -82,7 +103,22 @@ export function useRoomConnection(code: string | null, userId: string) {
 	// biome-ignore lint/correctness/useExhaustiveDependencies: reset only when the room changes
 	useEffect(() => {
 		setMessages([]);
+		resetDrawing([]);
 	}, [code]);
+
+	function notifyDrawing(change: DrawingChange) {
+		for (const listener of drawingListenersRef.current) listener(change);
+	}
+
+	function resetDrawing(operations: DrawOperation[]) {
+		drawingRef.current = operations;
+		notifyDrawing({ kind: "reset" });
+	}
+
+	function recordOperation(operation: DrawOperation) {
+		if (operation.type === "clear") drawingRef.current = [];
+		else drawingRef.current.push(operation);
+	}
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: `generation` restarts the connection on retry
 	useEffect(() => {
@@ -176,6 +212,20 @@ export function useRoomConnection(code: string | null, userId: string) {
 					case "chat:history":
 						setMessages(event.data.messages);
 						break;
+					// The server's drawing replaces ours, like chat history.
+					case "draw:history":
+						resetDrawing(event.data.operations);
+						break;
+					case "draw:operation": {
+						const operation = event.data.operation;
+						recordOperation(operation);
+						notifyDrawing(
+							operation.type === "clear"
+								? { kind: "reset" }
+								: { kind: "operation", operation },
+						);
+						break;
+					}
 					case "chat:message": {
 						const message = event.data.message;
 						setMessages((current) =>
@@ -222,7 +272,26 @@ export function useRoomConnection(code: string | null, userId: string) {
 		};
 	}, [code, userId, generation]);
 
+	const drawingApi = useRef<RoomDrawing>({
+		getOperations: () => drawingRef.current,
+		subscribe: (listener) => {
+			drawingListenersRef.current.add(listener);
+			return () => {
+				drawingListenersRef.current.delete(listener);
+			};
+		},
+		send: (operation) => {
+			const socket = socketRef.current;
+			if (socket?.readyState !== WebSocket.OPEN) return false;
+			const command: ClientCommand = { type: "draw", operation };
+			socket.send(JSON.stringify(command));
+			recordOperation(operation);
+			return true;
+		},
+	}).current;
+
 	return {
+		drawing: drawingApi,
 		snapshot,
 		connection,
 		blocker,

@@ -3,6 +3,9 @@ import {
 	CHAT_HISTORY_LIMIT,
 	chatMessageSchema,
 	createRoomInputSchema,
+	DRAW_HISTORY_MAX_POINTS,
+	type DrawOperation,
+	drawOperationSchema,
 	type PlayerSnapshot,
 	roomSettingsSchema,
 } from "@doodlesync/shared";
@@ -91,6 +94,8 @@ export class RoomService {
 			players: new Map([[player.id, { ...player }]]),
 			emptySince: null,
 			chat: [],
+			drawing: [],
+			drawingPoints: 0,
 		};
 		this.rooms.set(code, room);
 		this.memberships.set(player.id, code);
@@ -234,4 +239,55 @@ export class RoomService {
 		const room = this.findRoom(snapshot.code);
 		return room ? room.chat.map((message) => ({ ...message })) : [];
 	}
+
+	// Prototype rule: only the host draws (Phase 2 switches to the active drawer).
+	// Returns a copy of the stored operation for relaying to the room.
+	applyDrawOperation(playerId: string, code: string, input: unknown) {
+		const snapshot = this.getRoomForMember(playerId, code);
+		if (snapshot.hostId !== playerId) {
+			throw new RoomError("NOT_HOST", "Only the host can draw right now.");
+		}
+		const result = drawOperationSchema.safeParse(input);
+		if (!result.success) {
+			throw new RoomError("INVALID_INPUT", "Invalid drawing operation.");
+		}
+		const room = this.findRoom(snapshot.code);
+		if (!room) {
+			throw new RoomError("ROOM_NOT_FOUND", "Room not found.");
+		}
+		const operation = result.data;
+		if (operation.type === "clear") {
+			room.drawing = [];
+			room.drawingPoints = 0;
+			return copyOperation(operation);
+		}
+		if (
+			room.drawingPoints + operation.points.length >
+			DRAW_HISTORY_MAX_POINTS
+		) {
+			throw new RoomError(
+				"CANVAS_FULL",
+				"The canvas is full. Clear it to keep drawing.",
+			);
+		}
+		room.drawing.push(copyOperation(operation));
+		room.drawingPoints += operation.points.length;
+		return copyOperation(operation);
+	}
+
+	// Oldest first, since the last clear. Members only.
+	getDrawingHistory(playerId: string, code: string) {
+		const snapshot = this.getRoomForMember(playerId, code);
+		const room = this.findRoom(snapshot.code);
+		return room ? room.drawing.map(copyOperation) : [];
+	}
+}
+
+function copyOperation(operation: DrawOperation): DrawOperation {
+	return operation.type === "clear"
+		? { type: "clear" }
+		: {
+				...operation,
+				points: operation.points.map(([x, y]) => [x, y]),
+			};
 }

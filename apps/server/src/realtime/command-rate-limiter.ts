@@ -3,13 +3,24 @@ type Bucket = {
 	lastRefillAt: number;
 };
 
+type RateLimitOptions = {
+	capacity?: number;
+	refillPerSecond?: number;
+};
+
 export class CommandRateLimiter {
 	private readonly buckets = new Map<string, Bucket>();
-	private readonly capacity = 10;
-	private readonly refillPerSecond = 2;
+	private readonly capacity: number;
+	private readonly refillPerSecond: number;
 	private lastCleanupAt = 0;
 
-	constructor(private readonly now: () => number = () => performance.now()) {}
+	constructor(
+		private readonly now: () => number = () => performance.now(),
+		{ capacity = 10, refillPerSecond = 2 }: RateLimitOptions = {},
+	) {
+		this.capacity = capacity;
+		this.refillPerSecond = refillPerSecond;
+	}
 
 	allow(playerId: string): boolean {
 		const now = this.now();

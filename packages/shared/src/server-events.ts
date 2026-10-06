@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CHAT_HISTORY_LIMIT, chatMessageSchema } from "./chat-message";
+import { DRAW_HISTORY_MAX_OPERATIONS, drawOperationSchema } from "./drawing";
 import { errorSchema } from "./error-schema";
 import { roomSnapshotSchema } from "./room-snapshot";
 
@@ -23,6 +24,17 @@ export const serverEventsSchema = z.discriminatedUnion("type", [
 	z.strictObject({
 		type: z.literal("chat:history"),
 		messages: z.array(chatMessageSchema).max(CHAT_HISTORY_LIMIT),
+	}),
+	// A drawing operation from another player, in the order the server accepted it.
+	z.strictObject({
+		type: z.literal("draw:operation"),
+		operation: drawOperationSchema,
+	}),
+	// Sent only to the connecting socket, always (even when empty), so it
+	// replaces whatever the client had. Oldest first, since the last clear.
+	z.strictObject({
+		type: z.literal("draw:history"),
+		operations: z.array(drawOperationSchema).max(DRAW_HISTORY_MAX_OPERATIONS),
 	}),
 ]);
 

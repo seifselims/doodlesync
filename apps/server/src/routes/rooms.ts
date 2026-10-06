@@ -35,6 +35,11 @@ export function createRoomRoutes({
 }: RoomRouteDependencies) {
 	const routes = new Hono<{ Variables: SocketVariables }>();
 	const commandLimiter = new CommandRateLimiter();
+	// Drawing sends several small operations per second while the pen moves.
+	const drawLimiter = new CommandRateLimiter(undefined, {
+		capacity: 60,
+		refillPerSecond: 30,
+	});
 	const membershipTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	// Sends an event to every member whose live socket is in this room.
 	const broadcastToRoom = (
@@ -465,6 +470,12 @@ export function createRoomRoutes({
 						const history: ServerEvent = { type: "chat:history", messages };
 						ws.send(JSON.stringify(history));
 					}
+					// Always sent, so it replaces a reconnecting client's stale canvas.
+					const drawing: ServerEvent = {
+						type: "draw:history",
+						operations: roomService.getDrawingHistory(player.id, roomCode),
+					};
+					ws.send(JSON.stringify(drawing));
 				},
 				onClose: (_event, ws) => {
 					const detached = connections.detach(player.id, ws);
@@ -487,7 +498,22 @@ export function createRoomRoutes({
 					if (connections.get(player.id)?.socket !== ws) {
 						return;
 					}
-					if (!commandLimiter.allow(player.id)) {
+					let input: unknown;
+					let validJson = false;
+					if (typeof message.data === "string") {
+						try {
+							input = JSON.parse(message.data);
+							validJson = true;
+						} catch {}
+					}
+					// Drawing has its own, larger budget; everything else (including
+					// malformed input) uses the general command budget.
+					const isDraw =
+						typeof input === "object" &&
+						input !== null &&
+						(input as { type?: unknown }).type === "draw";
+					const limiter = isDraw ? drawLimiter : commandLimiter;
+					if (!limiter.allow(player.id)) {
 						ws.close(
 							socketCloseCodes.rateLimited,
 							"Too many commands. Please wait before reconnecting. ",
@@ -498,10 +524,7 @@ export function createRoomRoutes({
 						reject("Expected a JSON text message. ");
 						return;
 					}
-					let input: unknown;
-					try {
-						input = JSON.parse(message.data);
-					} catch {
+					if (!validJson) {
 						reject("Invalid JSON. ");
 						return;
 					}
@@ -544,6 +567,21 @@ export function createRoomRoutes({
 									type: "chat:message",
 									message: message,
 								});
+								break;
+							}
+							case "draw": {
+								const operation = roomService.applyDrawOperation(
+									player.id,
+									roomCode,
+									command.operation,
+								);
+								const room = roomService.getRoom(roomCode);
+								// The drawer already shows its own operation.
+								broadcastToRoom(
+									room.code,
+									room.players.filter((member) => member.id !== player.id),
+									{ type: "draw:operation", operation },
+								);
 								break;
 							}
 						}

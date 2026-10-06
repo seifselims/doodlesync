@@ -13,6 +13,13 @@ export const DRAW_MAX_WIDTH = BRUSH_WIDTHS[3];
 // Long strokes are split into several operations of at most this many points.
 export const DRAW_MAX_POINTS = 256;
 
+// Points a room's canvas may hold since its last clear. When a stroke would go
+// past this, the server rejects it with CANVAS_FULL instead of dropping older
+// strokes, so the stored history can always rebuild the whole picture.
+export const DRAW_HISTORY_MAX_POINTS = 50_000;
+// Each operation holds at least one point, so this also bounds the operations.
+export const DRAW_HISTORY_MAX_OPERATIONS = DRAW_HISTORY_MAX_POINTS;
+
 // 0 is the left/top edge of the canvas, 1 the right/bottom edge.
 const coordinateSchema = z.number().min(0).max(1);
 

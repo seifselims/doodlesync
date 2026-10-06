@@ -1,6 +1,7 @@
 import { once } from "node:events";
 import { setTimeout as wait } from "node:timers/promises";
 import {
+	type DrawOperation,
 	roomSnapshotSchema,
 	type ServerEvent,
 	serverEventsSchema,
@@ -105,12 +106,17 @@ describe("room socket commands and membership lifecycle", () => {
 			);
 			clients.push(socket);
 			const events: ServerEvent[] = [];
-			socket.on("message", (data) =>
-				events.push(serverEventsSchema.parse(JSON.parse(data.toString()))),
-			);
+			// `draw:history` ends every opening sequence; it is kept apart so
+			// lobby and chat assertions can count their own events.
+			const drawHistories: DrawOperation[][] = [];
+			socket.on("message", (data) => {
+				const event = serverEventsSchema.parse(JSON.parse(data.toString()));
+				if (event.type === "draw:history") drawHistories.push(event.operations);
+				else events.push(event);
+			});
 			await once(socket, "open");
-			await eventually(() => events.length >= 1);
-			return { socket, events };
+			await eventually(() => drawHistories.length >= 1);
+			return { socket, events, drawHistories };
 		}
 		async function disconnect(socket: WebSocket, id: string) {
 			const closed = once(socket, "close");

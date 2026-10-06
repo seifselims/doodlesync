@@ -1,14 +1,16 @@
 import {
 	BRUSH_WIDTHS,
 	CANVAS_ASPECT_RATIO,
+	DRAW_HISTORY_MAX_POINTS,
 	DRAW_MAX_POINTS,
-	type DrawOperation,
 	type DrawPoint,
 	type DrawStroke,
 	type DrawTool,
 } from "@doodlesync/shared";
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 
+import type { RoomDrawing } from "@/app/(app)/room/[code]/use-room-connection";
 import { drawSegment, drawStroke, replay } from "@/lib/draw-render";
 
 import { DRAW_COLORS, DrawingToolbar } from "./drawing-toolbar";
@@ -19,13 +21,33 @@ function round(value: number) {
 	return Math.round(Math.min(Math.max(value, 0), 1) * 10_000) / 10_000;
 }
 
-export function DrawingCanvas() {
+// While the pen moves, the stroke so far is sent this often so others see it
+// appear live. Each part starts where the previous one ended.
+const SEND_INTERVAL_MS = 80;
+
+function pointCount(drawing: RoomDrawing) {
+	let total = 0;
+	for (const operation of drawing.getOperations()) {
+		if (operation.type === "stroke") total += operation.points.length;
+	}
+	return total;
+}
+
+export function DrawingCanvas({
+	drawing,
+	canDraw,
+}: {
+	drawing: RoomDrawing;
+	/** Only the host draws for now; everyone else watches. */
+	canDraw: boolean;
+}) {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
-	// The drawing lives as data; the canvas pixels are only a rendering of it.
-	const operationsRef = useRef<DrawOperation[]>([]);
-	const currentRef = useRef<{ pointerId: number; stroke: DrawStroke } | null>(
-		null,
-	);
+	// The drawing lives as data in `drawing`; the canvas pixels only render it.
+	const currentRef = useRef<{
+		pointerId: number;
+		stroke: DrawStroke;
+		sentAt: number;
+	} | null>(null);
 	const [tool, setTool] = useState<DrawTool>("brush");
 	const [color, setColor] = useState<string>(DRAW_COLORS[0].value);
 	const [width, setWidth] = useState<number>(BRUSH_WIDTHS[1]);
@@ -42,13 +64,34 @@ export function DrawingCanvas() {
 			canvas.width = Math.round(width * scale);
 			canvas.height = Math.round(height * scale);
 			context.setTransform(scale, 0, 0, scale, 0, 0);
-			replay(context, operationsRef.current, width, height);
+			replay(context, drawing.getOperations(), width, height);
 			const current = currentRef.current;
 			if (current) drawStroke(context, current.stroke, width, height);
 		});
 		observer.observe(canvas);
-		return () => observer.disconnect();
-	}, []);
+		// Other players' operations, and full replacements (history or clear).
+		const unsubscribe = drawing.subscribe((change) => {
+			const { width, height } = canvas.getBoundingClientRect();
+			if (change.kind === "operation") {
+				if (change.operation.type === "stroke") {
+					drawStroke(context, change.operation, width, height);
+				}
+			} else {
+				replay(context, drawing.getOperations(), width, height);
+			}
+			setCanClear(drawing.getOperations().length > 0);
+		});
+		setCanClear(drawing.getOperations().length > 0);
+		return () => {
+			observer.disconnect();
+			unsubscribe();
+		};
+	}, [drawing]);
+
+	// Losing drawing rights (e.g. host moved) ends any stroke in progress.
+	useEffect(() => {
+		if (!canDraw) currentRef.current = null;
+	}, [canDraw]);
 
 	function toPoint(
 		event: { clientX: number; clientY: number },
@@ -60,29 +103,72 @@ export function DrawingCanvas() {
 		];
 	}
 
-	function finishStroke() {
-		const current = currentRef.current;
-		if (!current) return;
-		operationsRef.current.push(current.stroke);
-		currentRef.current = null;
-		setCanClear(true);
-	}
-
-	function clear() {
+	// Removes a stroke the server would not accept from this screen too.
+	function redraw() {
 		const canvas = canvasRef.current;
 		const context = canvas?.getContext("2d");
 		if (!canvas || !context) return;
-		// Nothing before a clear is visible afterwards, so the history can go too.
-		operationsRef.current = [];
-		currentRef.current = null;
 		const { width, height } = canvas.getBoundingClientRect();
-		context.clearRect(0, 0, width, height);
+		replay(context, drawing.getOperations(), width, height);
+	}
+
+	// Sends the stroke so far. Returns false (and ends the stroke) on failure.
+	function sendStroke(): boolean {
+		const current = currentRef.current;
+		if (!current) return false;
+		if (
+			pointCount(drawing) + current.stroke.points.length >
+			DRAW_HISTORY_MAX_POINTS
+		) {
+			currentRef.current = null;
+			redraw();
+			toast.error("The canvas is full", {
+				description: "Clear it to keep drawing.",
+			});
+			return false;
+		}
+		if (!drawing.send(current.stroke)) {
+			currentRef.current = null;
+			redraw();
+			toast.error("Not connected", { description: "Your stroke wasn’t sent." });
+			return false;
+		}
+		setCanClear(true);
+		return true;
+	}
+
+	function finishStroke() {
+		sendStroke();
+		currentRef.current = null;
+	}
+
+	// Sends the stroke so far and keeps drawing from its last point.
+	function sendAndContinue(pointerId: number, now: number) {
+		const stroke = currentRef.current?.stroke;
+		if (!stroke || !sendStroke()) return;
+		const last = stroke.points[stroke.points.length - 1] as DrawPoint;
+		currentRef.current = {
+			pointerId,
+			stroke: { ...stroke, points: [last] },
+			sentAt: now,
+		};
+	}
+
+	function clear() {
+		if (!drawing.send({ type: "clear" })) {
+			toast.error("Not connected", {
+				description: "The canvas wasn’t cleared.",
+			});
+			return;
+		}
+		currentRef.current = null;
+		redraw();
 		setCanClear(false);
 	}
 
 	function onPointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
 		// Primary button, finger or pen only; ignore a second finger mid-stroke.
-		if (event.button !== 0 || currentRef.current) return;
+		if (!canDraw || event.button !== 0 || currentRef.current) return;
 		const canvas = event.currentTarget;
 		const context = canvas.getContext("2d");
 		if (!context) return;
@@ -96,7 +182,11 @@ export function DrawingCanvas() {
 			width,
 			points: [point],
 		};
-		currentRef.current = { pointerId: event.pointerId, stroke };
+		currentRef.current = {
+			pointerId: event.pointerId,
+			stroke,
+			sentAt: performance.now(),
+		};
 		drawSegment(context, stroke, point, point, rect.width, rect.height);
 	}
 
@@ -119,12 +209,17 @@ export function DrawingCanvas() {
 			stroke.points.push(point);
 			// Split long strokes; the next part starts where this one ended.
 			if (stroke.points.length === DRAW_MAX_POINTS) {
-				finishStroke();
-				currentRef.current = {
-					pointerId: event.pointerId,
-					stroke: { ...stroke, points: [point] },
-				};
+				sendAndContinue(event.pointerId, performance.now());
 			}
+		}
+		const now = performance.now();
+		const latest = currentRef.current;
+		if (
+			latest &&
+			latest.stroke.points.length > 1 &&
+			now - latest.sentAt >= SEND_INTERVAL_MS
+		) {
+			sendAndContinue(event.pointerId, now);
 		}
 	}
 
@@ -142,23 +237,29 @@ export function DrawingCanvas() {
 				<canvas
 					ref={canvasRef}
 					aria-label="Drawing canvas"
-					className="block size-full cursor-crosshair touch-none"
+					className={
+						canDraw
+							? "block size-full cursor-crosshair touch-none"
+							: "block size-full"
+					}
 					onPointerDown={onPointerDown}
 					onPointerMove={onPointerMove}
 					onPointerUp={onPointerEnd}
 					onPointerCancel={onPointerEnd}
 				/>
 			</div>
-			<DrawingToolbar
-				tool={tool}
-				color={color}
-				width={width}
-				canClear={canClear}
-				onToolChange={setTool}
-				onColorChange={setColor}
-				onWidthChange={setWidth}
-				onClear={clear}
-			/>
+			{canDraw && (
+				<DrawingToolbar
+					tool={tool}
+					color={color}
+					width={width}
+					canClear={canClear}
+					onToolChange={setTool}
+					onColorChange={setColor}
+					onWidthChange={setWidth}
+					onClear={clear}
+				/>
+			)}
 		</div>
 	);
 }

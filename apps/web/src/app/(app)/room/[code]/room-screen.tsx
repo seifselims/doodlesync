@@ -41,6 +41,7 @@ export function RoomScreen({ rawCode }: { rawCode: string }) {
 		blocker,
 		messages,
 		sendChat,
+		drawing,
 		retry,
 		markLeaving,
 	} = useRoomConnection(code, user.id);
@@ -192,18 +193,23 @@ export function RoomScreen({ rawCode }: { rawCode: string }) {
 					</CardContent>
 				</Card>
 
-				{/* Local-only for now: strokes are not sent to other players yet. */}
+				{/* Prototype rule: only the host draws; Phase 2 hands the pen to each drawer. */}
 				<Card size="sm" className="lg:col-span-2 lg:row-start-4">
 					<CardHeader>
 						<CardTitle>
 							<h2>Sketchpad</h2>
 						</CardTitle>
 						<CardDescription>
-							Try drawing. Only you can see it for now.
+							{isHost
+								? "Draw something. Everyone in the room sees it live."
+								: `Only ${host?.name ?? "the host"} can draw for now. Watch it appear live.`}
 						</CardDescription>
 					</CardHeader>
 					<CardContent>
-						<DrawingCanvas />
+						<DrawingCanvas
+							drawing={drawing}
+							canDraw={isHost && connection === "connected"}
+						/>
 					</CardContent>
 				</Card>
 

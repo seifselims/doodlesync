@@ -9,6 +9,7 @@ export const errorCodeSchema = z.enum([
 	"ROOM_CODE_EXHAUSTED",
 	"NOT_HOST",
 	"NOT_IN_ROOM",
+	"CANVAS_FULL",
 ]);
 
 export const errorSchema = z.strictObject({

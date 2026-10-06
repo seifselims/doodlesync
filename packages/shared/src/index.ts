@@ -8,6 +8,8 @@ export { type ClientCommand, clientCommandSchema } from "./client-commands";
 export {
 	BRUSH_WIDTHS,
 	CANVAS_ASPECT_RATIO,
+	DRAW_HISTORY_MAX_OPERATIONS,
+	DRAW_HISTORY_MAX_POINTS,
 	DRAW_MAX_POINTS,
 	DRAW_MAX_WIDTH,
 	DRAW_MIN_WIDTH,
